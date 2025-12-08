@@ -7,8 +7,12 @@ Update `API_KEY` with your Polygon.io API key.
 from __future__ import annotations
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # --- Polygon API ---
-API_KEY: str = "E30hbMa_tamUFVJ7j9iGvP5F0kOHPdi_"  # Replace or set via environment in Phase 2
+API_KEY: str = os.getenv("POLYGON_API_KEY", "")
 
 # --- Timings (milliseconds for Qt, seconds for others) ---
 SNAPSHOT_REFRESH_SECONDS: int = 10
@@ -35,8 +39,8 @@ CHART_ZOOM_ANIMATION_DURATION_MS: int = 150
 # ============================================================================
 
 # Supabase Configuration
-SUPABASE_URL = "https://byxtanngfywoplffgybt.supabase.co"  # e.g., https://xxxxx.supabase.co
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5eHRhbm5nZnl3b3BsZmZneWJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI4ODg1MTcsImV4cCI6MjA3ODQ2NDUxN30.XRPvcT_jwoNjVz4QsAEB469xK0RclDh3wV8kuFOFH5E"     # Your project's anon/public key
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 # Optional: service key for username-based login resolution (set via environment for safety)
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # your service role key, do NOT commit
 

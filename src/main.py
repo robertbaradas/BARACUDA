@@ -8,6 +8,7 @@ from PyQt5 import QtWidgets
 from config import API_KEY, LOG_LEVEL
 from src.polygon_client import PolygonClient
 from src.gui import MainWindow
+from src.services.market_data_service import MarketDataService
 
 
 def main() -> int:
@@ -21,8 +22,10 @@ def main() -> int:
         return 1
 
     client = PolygonClient(API_KEY)
+    market_data = MarketDataService(client)
+
     app = QtWidgets.QApplication(sys.argv)
-    win = MainWindow(client)
+    win = MainWindow(client, market_data)
     win.resize(1100, 800)
     win.show()
     return app.exec_()
