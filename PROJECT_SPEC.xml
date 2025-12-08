@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project_spec version="1.0">
+  <project_context>
+    <title>Stock Data Viewer (Polygon.io - Delayed)</title>
+    <phase>Phase 2 (Implemented)</phase>
+    <description>PyQt5 desktop app for delayed US stock data with Supabase-backed authentication and paper trading. Users log in, load tickers (WebSocket trades + REST snapshot for today stats), view Info/Chart tabs, monitor a Time &amp; Sales tape, and place paper market orders on the Trade tab. Chart uses pyqtgraph (1Y daily view, zoom/timeframes, RSI) and a live WebSocket updates prices.</description>
+  </project_context>
+
+  <api_integration>
+    <provider>Polygon.io</provider>
+    <plan>Stocks Developer (Individual) — Delayed data</plan>
+    <api_key>Provided by user in config.py</api_key>
+    <websocket>
+      <url>wss://socket.polygon.io/stocks</url>
+      <channels>
+        <trade>T.{TICKER}</trade>
+      </channels>
+      <entitlements>
+        <quotes_available>false</quotes_available>
+        <trades_available>true</trades_available>
+      </entitlements>
+    </websocket>
+    <rest_endpoints>
+      <details>/v3/reference/tickers/{ticker}</details>
+      <prev_close>/v2/aggs/ticker/{ticker}/prev</prev_close>
+      <snapshot>/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}</snapshot>
+      <aggs_range>/v2/aggs/ticker/{ticker}/range/{mult}/{unit}/{from}/{to}</aggs_range>
+    </rest_endpoints>
+  </api_integration>
+
+  <database_integration>
+    <service>Supabase</service>
+    <usage>Authentication (email/password), profiles, accounts, orders, fills, positions, ledger, snapshots caching</usage>
+    <client>supabase-py (sync)</client>
+    <tables_auto_created>profiles, accounts, orders, fills, positions, ledger, portfolio_snapshots</tables_auto_created>
+  </database_integration>
+
+  <data_points>
+    <live>
+      <current_price>From WebSocket trades (T.*)</current_price>
+      <last_trade_time>UTC + ET formatted</last_trade_time>
+      <change_dollar>Current - Previous Close</change_dollar>
+      <change_percent>((Current - PrevClose) / PrevClose) * 100</change_percent>
+      <ws_status>CONNECTING, CONNECTED, DELAYED, RECONNECTING, ERROR, DISCONNECTED</ws_status>
+    </live>
+    <static_daily>
+      <company_name>true</company_name>
+      <company_description>true</company_description>
+      <open>true</open>
+      <high>true</high>
+      <low>true</low>
+      <volume>true</volume>
+      <avg_volume_30d>Computed from last ~30 daily aggregates</avg_volume_30d>
+      <market_cap>true</market_cap>
+      <week_52_high>Computed from ~1 year aggregates</week_52_high>
+      <week_52_low>Computed from ~1 year aggregates</week_52_low>
+      <pe_ratio>Displayed if available; may be blank</pe_ratio>
+      <market_status>Heuristic via ET time: PRE-MARKET, MARKET HOURS, AFTER-HOURS, CLOSED</market_status>
+    </static_daily>
+    <trading>
+      <account>Paper account per user (Supabase)</account>
+      <positions>Tracked via fills and stored in Supabase</positions>
+      <orders>Market orders only; synchronous fill</orders>
+      <portfolio>Equity, cash, market value, realized/unrealized P&amp;L</portfolio>
+    </trading>
+  </data_points>
+
+  <gui>
+    <framework>PyQt5 + pyqtgraph</framework>
+    <window>
+      <controls>
+        <ticker_input>QLineEdit + Load button</ticker_input>
+      </controls>
+      <status_bar>
+        <feed_status>Label, colored indicator dot</feed_status>
+        <last_update>UTC timestamp</last_update>
+      </status_bar>
+      <tabs>
+        <tab name="Info">Live data, today stats, key metrics, company description (fixed-height QTextEdit), Time &amp; Sales tape</tab>
+        <tab name="Chart">Candlestick chart with timeframe buttons (1D/1W/1M/3M/YTD/1Y/5Y), RSI pane toggle, Volume toggle, Log Y toggle, crosshair readout.</tab>
+        <tab name="Trade">Portfolio header, order entry ticket, open positions table, order blotter synced with Supabase</tab>
+      </tabs>
+    </window>
+    <chart>
+      <library>pyqtgraph</library>
+      <candles>
+        <wicks>ErrorBarItem</wicks>
+        <bodies>BarGraphItem (green up, red down)</bodies>
+        <x_axis>Dynamic labels (months/days/hours:minutes based on zoom level; debounced range handling)</x_axis>
+      </candles>
+      <volume>BarGraphItem in linked pane; toggleable</volume>
+      <rsi>
+        <pane>Separate linked pane; toggleable</pane>
+        <lines>70/30 dashed lines + 30-70 band</lines>
+      </rsi>
+    </chart>
+  </gui>
+
+  <code_structure>
+    <file path="config.py" purpose="Configuration and timing constants (Polygon + Supabase + trading)" />
+    <file path="src/polygon_client.py" purpose="REST methods and WebSocket stream with status callbacks" />
+    <file path="src/data_models.py" purpose="Data classes (CompanyDetails, DailyStats, RollingStats, Candle, Account/Order/Fill/Position)" />
+    <file path="src/portfolio.py" purpose="Cash/position math helpers" />
+    <file path="src/oms.py" purpose="Paper broker, emits order/portfolio signals" />
+    <file path="src/supabase_store.py" purpose="Supabase CRUD + ensure_schema" />
+    <file path="src/auth_client.py" purpose="Supabase auth wrapper + session cache" />
+    <file path="src/gui_auth.py" purpose="Login/sign-up dialog" />
+    <file path="src/gui_tape.py" purpose="Time &amp; Sales tape widget" />
+    <file path="src/gui_trade.py" purpose="Trade tab (portfolio/order UI)" />
+    <file path="src/gui.py" purpose="MainWindow UI, Info/Chart/Trade tabs, WsThread, timers" />
+    <file path="src/main.py" purpose="Entry point, logging, app bootstrap" />
+  </code_structure>
+
+  <implementation>
+    <timers>
+      <snapshot_seconds>10</snapshot_seconds>
+      <ws_start_grace_ms>280</ws_start_grace_ms>
+      <ws_stop_wait_ms>1800</ws_stop_wait_ms>
+      <load_guard_safety_ms>5000</load_guard_safety_ms>
+      <ws_reconnect_delay_seconds>1.0</ws_reconnect_delay_seconds>
+      <chart_refresh_intraday_ms>config.CHART_INTRADAY_REFRESH_MS (default 45000)</chart_refresh_intraday_ms>
+      <chart_refresh_daily_ms>config.CHART_DAILY_REFRESH_MS (default 120000)</chart_refresh_daily_ms>
+    </timers>
+    <threading>
+      <websocket>
+        <thread>QThread (WsThread) with its own asyncio loop</thread>
+        <signals>
+          <trade_signal>dict trade events</trade_signal>
+          <status_signal>status strings</status_signal>
+        </signals>
+      </websocket>
+      <rest_loading>threading.Thread for initial loads and snapshot polling work</rest_loading>
+      <chart_loading>threading.Thread computes arrays for candles/timeframes, emits chart_candles_ready</chart_loading>
+      <ui_updates>All GUI updates via Qt signals/slots</ui_updates>
+      <trade_execution>Broker executes orders synchronously on GUI thread (signals emitted to Trade tab)</trade_execution>
+    </threading>
+    <lifecycle>
+      <switch_ticker>
+        <sequence>Stop old WS (requestInterruption → stop → quit → wait up to 1800–4800ms → deleteLater; last-resort terminate) then start new after grace. Snapshot + chart timers restarted from GUI thread via queued slots.</sequence>
+      </switch_ticker>
+      <ws_status_flow>CONNECTING → CONNECTED → DELAYED on first trade; on errors: ERROR then RECONNECTING; DISCONNECTED on stop</ws_status_flow>
+      <timer_starts>All Qt timers started on GUI thread (queued slots) to avoid QThread timer warnings.</timer_starts>
+    </lifecycle>
+    <formatting_helpers>
+      <price>_fmt_price</price>
+      <int>_fmt_int</int>
+      <percent>_fmt_pct</percent>
+      <datetime>_fmt_dt_et</datetime>
+      <colorize>_set_color_number</colorize>
+      <timestamp_parser>_ts_to_dt_utc</timestamp_parser>
+    </formatting_helpers>
+    <signals_mainwindow>
+      <price_update>price, prev_close, last_trade_dt</price_update>
+      <today_update>open, high, low, volume</today_update>
+      <keys_update>prev_close, avg_vol_30d, 52wH, 52wL, mkt_cap, pe, status</keys_update>
+      <company_update>name, description</company_update>
+      <ws_status_update>status string</ws_status_update>
+      <chart_candles_ready>numpy array for candles, datetime list, level id</chart_candles_ready>
+      <chart_requests_from_tab>
+        <requestCandles>ChartTab → MainWindow (level L1–L5)</requestCandles>
+        <requestTimeframe>ChartTab → MainWindow (1D/1W/1M/3M/YTD/1Y/5Y)</requestTimeframe>
+      </chart_requests_from_tab>
+    </signals_mainwindow>
+  </implementation>
+
+  <behavior>
+    <on_load>
+      <steps>
+        <step>Stop old WebSocket and snapshot timer</step>
+        <step>Fetch details, previous close, snapshot</step>
+        <step>Compute 30d avg volume and 52w high/low via /v2/aggs range</step>
+        <step>Populate UI fields</step>
+        <step>Start snapshot polling timer (10s)</step>
+        <step>After 280ms, start WebSocket for T.{TICKER}</step>
+      </steps>
+    </on_load>
+    <snapshot_polling>
+      <interval_seconds>10</interval_seconds>
+      <fields>Today stats (open/high/low/volume) + last trade fallback</fields>
+    </snapshot_polling>
+    <chart_loading>
+      <when>On first open of Chart tab per ticker; and on timeframe or level changes</when>
+      <range_days>~365 for daily; intraday uses 5m/30m/1m based on timeframe and level</range_days>
+      <refresh>Intraday 45s; Daily 120s (configurable)</refresh>
+    </chart_loading>
+    <timeframe_buttons>
+      <map>
+        <t1>1D → 5 minute</t1>
+        <t2>1W → 30 minute</t2>
+        <t3>1M → 1 day</t3>
+        <t4>3M → 1 day</t4>
+        <t5>YTD → 1 day</t5>
+        <t6>1Y → 1 day</t6>
+        <t7>5Y → 1 day</t7>
+      </map>
+      <view_lock>When a timeframe is selected, panning/zooming is constrained to the dataset window; zoom levels do not auto-switch.</view_lock>
+    </timeframe_buttons>
+    <zoom_levels>
+      <levels>
+        <L1>Daily bars, span &gt; 180d</L1>
+        <L2>Daily bars, span 30–180d</L2>
+        <L3>30-minute bars, span 3–30d (fallback daily)</L3>
+        <L4>5-minute bars, span 0.25–3d (fallback 15m)</L4>
+        <L5>1-minute bars, span &lt; 0.25d (fallback 5m)</L5>
+      </levels>
+      <debounce_ms>~180ms to avoid flapping</debounce_ms>
+      <axis>Dynamic X-axis tick formatter per level/span</axis>
+    </zoom_levels>
+    <trading_flow>
+      <auth>Login dialog on startup (Supabase email/password, cached session optional)</auth>
+      <account>On first login, create "Paper-1" account with starting capital; reuse existing account thereafter</account>
+      <order_entry>Trade tab submits market BUY/SELL orders synchronously, validates cash/position, inserts order/fill/ledger/position updates via Supabase</order_entry>
+      <signals>Broker emits orderAccepted, orderFilled, positionsUpdated, portfolioUpdated, omsError; Trade tab updates blotter/positions/portfolio header</signals>
+      <tape>Info tab Time &amp; Sales widget backfills via Polygon /v3/trades, paginated; appends live trades from WebSocket</tape>
+    </trading_flow>
+  </behavior>
+
+  <market_coverage>
+    <region>US</region>
+    <notes>Uses /locale/us/markets/stocks endpoints and ET-based status</notes>
+  </market_coverage>
+
+  <dependencies>
+    <python>3.10+</python>
+    <packages>
+      <pkg>PyQt5==5.15.9</pkg>
+      <pkg>httpx==0.24.1</pkg>
+      <pkg>websockets==11.0.3</pkg>
+      <pkg>python-dateutil==2.8.2</pkg>
+      <pkg>pyqtgraph==0.13.3</pkg>
+      <pkg>numpy==1.24.3</pkg>
+    </packages>
+  </dependencies>
+
+  <setup>
+    <steps>
+      <step>Create virtual environment</step>
+      <step>pip install -r requirements.txt</step>
+      <step>Set API_KEY in config.py</step>
+      <step>Run: python -m src.main</step>
+    </steps>
+  </setup>
+
+  <usage>
+    <load_ticker>Enter ticker (e.g., AAPL) and click Load</load_ticker>
+    <status>Feed status shows lifecycle; DELAYED appears after first event</status>
+    <bid_ask>Snapshot updates every 10 seconds</bid_ask>
+    <chart>Open Chart tab to render 1-year candlesticks</chart>
+  </usage>
+
+  <known_limitations>
+    <delay>~15 minutes delayed trades</delay>
+    <quotes>No Q.* WebSocket quotes; bid/ask via snapshot polling</quotes>
+    <pe_ratio>May be unavailable in reference data</pe_ratio>
+    <intraday>Intraday data is delayed and may fall back to daily aggregates if entitlement/rate-limits block minute queries.</intraday>
+  </known_limitations>
+
+  <success_criteria>
+    <ws>Stable start/stop across ticker switches</ws>
+    <snapshot>10s polling without blocking UI</snapshot>
+    <chart>Timeframe windows obey view-lock; intraday/daily candlesticks render correctly and refresh</chart>
+    <status_display>Accurate connection status and ET timestamps</status_display>
+  </success_criteria>
+
+  <directory_structure>
+    <tree>
+      stock-data-viewer/
+      ├── src/
+      │   ├── __init__.py
+      │   ├── polygon_client.py
+      │   ├── data_models.py
+      │   ├── gui.py
+      │   └── main.py
+      ├── config.py
+      ├── requirements.txt
+      └── README.md
+    </tree>
+  </directory_structure>
+</project_spec>

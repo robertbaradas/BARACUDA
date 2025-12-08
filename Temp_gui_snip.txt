@@ -1,0 +1,141 @@
+            self.keys_update.emit(self._prev_close, avg_vol_30d, w52h, w52l, market_cap, pe_ratio, market_status)
+            self.quote_update.emit(bid, ask, bid_size, ask_size)
+            self.price_update.emit(self._last_trade_price or 0.0, self._prev_close or 0.0, self._last_trade_time_utc)
+            QtCore.QMetaObject.invokeMethod(self, "_set_last_update_now", QtCore.Qt.QueuedConnection)
+            # Notify chart of current ticker (for cache key semantics if needed)
+            self.chart_set_ticker.emit(ticker)
+
+            # Start snapshot poller and websocket after a small grace delay
+            QtCore.QTimer.singleShot(WS_START_GRACE_MS, self._start_ws)
+            self._snapshot_timer.start()
+        except Exception as exc:
+            logger.exception("Failed to load ticker %s: %s", ticker, exc)
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "_show_error",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, f"Failed to load ticker {ticker}: {exc}"),
+            )
+        finally:
+            QtCore.QMetaObject.invokeMethod(self, "_clear_loading_flag", QtCore.Qt.QueuedConnection)
+
+    def _load_chart_data(self, ticker: str) -> None:
+        try:
+            end = datetime.now(timezone.utc).date()
+            start = (datetime.now(timezone.utc) - timedelta(days=CHART_LOOKBACK_DAYS)).date()
+            data = self.client.get_daily_aggs_range(ticker, start.isoformat(), end.isoformat())
+            results = data.get("results") or []
+            if not results:
+                return
+            # Build array: [t_utc, open, high, low, close, volume, is_up]
+            arr = np.zeros((len(results), 7), dtype=float)
+            dt_list = []
+            for i, r in enumerate(results):
+                t_ms = float(r.get("t", 0))
+                t_sec = t_ms / 1000.0
+                o = float(r.get("o", np.nan))
+                h = float(r.get("h", np.nan))
+                l = float(r.get("l", np.nan))
+                c = float(r.get("c", np.nan))
+                v = float(r.get("v", 0.0))
+                arr[i, 0] = t_sec
+                arr[i, 1] = o
+                arr[i, 2] = h
+                arr[i, 3] = l
+                arr[i, 4] = c
+                arr[i, 5] = v
+                arr[i, 6] = 1.0 if c >= o else 0.0
+                dt_list.append(datetime.fromtimestamp(t_sec, tz=timezone.utc))
+            self._chart_loaded_for_ticker = ticker
+            # Level L1 for ~1Y view
+            self.chart_candles_ready.emit(arr, dt_list, 'L1')
+
+    @QtCore.pyqtSlot(str)
+    def _on_chart_request_level(self, level: str) -> None:
+        # Fetch appropriate aggregation for current ticker and send to chart
+        if not self._current_ticker:
+            return
+        ticker = self._current_ticker
+        def _fetch():
+            try:
+                end_dt = datetime.now(timezone.utc)
+                # choose start by level
+                if level in ('L1', 'L2'):
+                    start_dt = end_dt - timedelta(days=CHART_LOOKBACK_DAYS)
+                    data = self.client.get_aggs_range(ticker, 1, 'day', start_dt.date().isoformat(), end_dt.date().isoformat())
+                elif level == 'L3':
+                    start_dt = end_dt - timedelta(days=30)
+                    try:
+                        data = self.client.get_aggs_range(ticker, 30, 'minute', start_dt.date().isoformat(), end_dt.date().isoformat())
+                    except Exception:
+                        data = self.client.get_aggs_range(ticker, 1, 'day', start_dt.date().isoformat(), end_dt.date().isoformat())
+                elif level == 'L4':
+                    start_dt = end_dt - timedelta(days=3)
+                    try:
+                        data = self.client.get_aggs_range(ticker, 5, 'minute', start_dt.date().isoformat(), end_dt.date().isoformat())
+                    except Exception:
+                        data = self.client.get_aggs_range(ticker, 15, 'minute', start_dt.date().isoformat(), end_dt.date().isoformat())
+                else:  # L5
+                    start_dt = end_dt - timedelta(days=1)
+                    try:
+                        data = self.client.get_aggs_range(ticker, 1, 'minute', start_dt.date().isoformat(), end_dt.date().isoformat())
+                    except Exception:
+                        data = self.client.get_aggs_range(ticker, 5, 'minute', start_dt.date().isoformat(), end_dt.date().isoformat())
+
+                results = data.get('results') or []
+                if not results:
+                    return
+                arr = np.zeros((len(results), 7), dtype=float)
+                dt_list = []
+                for i, r in enumerate(results):
+                    t_ms = float(r.get('t', 0))
+                    t_sec = t_ms / 1000.0
+                    o = float(r.get('o', np.nan))
+                    h = float(r.get('h', np.nan))
+                    l = float(r.get('l', np.nan))
+                    c = float(r.get('c', np.nan))
+                    v = float(r.get('v', 0.0))
+                    arr[i, 0] = t_sec
+                    arr[i, 1] = o
+                    arr[i, 2] = h
+                    arr[i, 3] = l
+                    arr[i, 4] = c
+                    arr[i, 5] = v
+                    arr[i, 6] = 1.0 if c >= o else 0.0
+                    dt_list.append(datetime.fromtimestamp(t_sec, tz=timezone.utc))
+                self.chart_candles_ready.emit(arr, dt_list, level)
+            except Exception as exc:
+                logger.debug('Level fetch failed for %s %s: %s', ticker, level, exc)
+        threading.Thread(target=_fetch, daemon=True).start()
+        except Exception as exc:
+            logger.warning("Failed to load chart candles for %s: %s", ticker, exc)
+
+    def _do_snapshot_update(self, ticker: str) -> None:
+        try:
+            snap = self.client.get_snapshot(ticker)
+            ticker_json = (snap or {}).get("ticker") or {}
+            lastTrade = ticker_json.get("lastTrade") or {}
+            lastQuote = ticker_json.get("lastQuote") or {}
+            if lastTrade:
+                self._last_trade_price = lastTrade.get("p")
+                self._last_trade_time_utc = _ts_to_dt_utc(lastTrade.get("t", 0))
+            if lastQuote:
+                bid = lastQuote.get("p")
+                ask = lastQuote.get("P")
+                bid_size = lastQuote.get("s")
+                ask_size = lastQuote.get("S")
+                self.quote_update.emit(bid, ask, bid_size, ask_size)
+
+            if self._last_trade_price is not None:
+                self.price_update.emit(self._last_trade_price, self._prev_close or 0.0, self._last_trade_time_utc)
+                QtCore.QMetaObject.invokeMethod(self, "_set_last_update_now", QtCore.Qt.QueuedConnection)
+        except Exception as exc:
+            logger.debug("Snapshot update failed: %s", exc)
+
+    # ----------------- WebSocket lifecycle -----------------
+    def _start_ws(self) -> None:
+        if not self._current_ticker:
+            return
+        # Ensure no existing thread
+        self._stop_ws()
+        self._ws_thread = WsThread(self.client, self._current_ticker)

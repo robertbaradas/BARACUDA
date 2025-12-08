@@ -1,0 +1,1504 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<change_spec version="2.1">
+  <!-- ================================================================ -->
+  <!-- PHASE 2 DELTA: Trading, Portfolio, ML, and Authentication       -->
+  <!-- Non-destructive additions to Phase 1 stock data viewer          -->
+  <!-- ================================================================ -->
+
+  <!-- === NON-DESTRUCTIVE CONTRACT === -->
+  <constraints>
+    <rule>Do NOT remove or rewrite existing features, classes, or functions.</rule>
+    <rule>Only add new modules and minimally patch existing files where explicitly stated.</rule>
+    <rule>Preserve current GUI layout, chart logic, WS threading, and timers.</rule>
+    <rule>All new features are additive - existing Info and Chart tabs remain unchanged in functionality.</rule>
+  </constraints>
+
+  <!-- === NEW DEPENDENCIES === -->
+  <dependencies>
+    <append_to_requirements>
+# Phase 2 additions
+supabase==2.0.3
+pandas==2.0.3
+scikit-learn==1.3.0
+    </append_to_requirements>
+  </dependencies>
+
+  <!-- === CONFIG ADDITIONS === -->
+  <config_additions>
+    <instruction>Append these constants to config.py, preserving all existing configuration</instruction>
+    <constants>
+# ============================================================================
+# PHASE 2: Trading, Portfolio, and ML Configuration
+# ============================================================================
+
+# Supabase Configuration
+SUPABASE_URL = "YOUR_SUPABASE_PROJECT_URL_HERE"  # e.g., https://xxxxx.supabase.co
+SUPABASE_KEY = "YOUR_SUPABASE_ANON_KEY_HERE"     # Your project's anon/public key
+
+# Portfolio Configuration
+STARTING_CAPITAL = 10000.0  # Default starting cash for new accounts
+MARK_PRICE_SOURCE = "LAST_TRADE"  # Options: "LAST_TRADE" or "MIDPOINT"
+
+# Trading Configuration
+ENABLE_SLIPPAGE = False  # Apply slippage simulation to fills
+SLIPPAGE_BPS = 5  # Basis points of slippage (if enabled)
+ENABLE_COMMISSION = False  # Charge commission on trades
+COMMISSION_PER_SHARE = 0.0  # Commission per share (if enabled)
+MIN_COMMISSION = 0.0  # Minimum commission per trade (if enabled)
+
+# ML Configuration
+ML_CACHE_ENABLED = True  # Cache ML results in Supabase
+ML_WINDOWS = ["1D", "1W", "1M", "3M", "1Y"]  # Analysis windows
+ML_KMEANS_CLUSTERS = 3  # Number of regime clusters (buyer/balanced/seller)
+
+# Time & Sales Configuration
+TAPE_MAX_ROWS = 500  # Maximum rows in Time & Sales tape before trimming
+TAPE_BACKFILL_ENABLED = True  # Backfill today's trades on ticker load
+    </constants>
+  </config_additions>
+
+  <!-- === SUPABASE SCHEMA === -->
+  <supabase_schema>
+    <instruction>
+      The ensure_schema() function in supabase_store.py will create these tables if they don't exist.
+      Run this on first launch or manually via Supabase SQL editor.
+    </instruction>
+
+    <table name="profiles">
+      <description>User profiles extending auth.users</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  username TEXT UNIQUE NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- RLS Policies
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own profile"
+  ON profiles FOR SELECT
+  USING (auth.uid() = id);
+
+CREATE POLICY "Users can update own profile"
+  ON profiles FOR UPDATE
+  USING (auth.uid() = id);
+      ]]></sql>
+    </table>
+
+    <table name="accounts">
+      <description>Trading accounts (paper trading portfolios)</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS accounts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  base_ccy TEXT DEFAULT 'USD',
+  starting_cash NUMERIC(15,2) DEFAULT 10000.00,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
+
+-- RLS Policies
+ALTER TABLE accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own accounts"
+  ON accounts FOR SELECT
+  USING (user_id IN (SELECT id FROM profiles WHERE id = auth.uid()));
+
+CREATE POLICY "Users can insert own accounts"
+  ON accounts FOR INSERT
+  WITH CHECK (user_id IN (SELECT id FROM profiles WHERE id = auth.uid()));
+
+CREATE POLICY "Users can update own accounts"
+  ON accounts FOR UPDATE
+  USING (user_id IN (SELECT id FROM profiles WHERE id = auth.uid()));
+      ]]></sql>
+    </table>
+
+    <table name="orders">
+      <description>Order history (all submitted orders)</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS orders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  ticker TEXT NOT NULL,
+  side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+  qty INTEGER NOT NULL CHECK (qty > 0),
+  order_type TEXT NOT NULL CHECK (order_type IN ('MARKET', 'LIMIT', 'STOP')),
+  limit_price NUMERIC(15,4) NULL,
+  stop_price NUMERIC(15,4) NULL,
+  status TEXT NOT NULL CHECK (status IN ('PENDING', 'ACCEPTED', 'FILLED', 'PARTIAL', 'CANCELLED', 'REJECTED')),
+  submitted_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_account ON orders(account_id);
+CREATE INDEX IF NOT EXISTS idx_orders_ticker ON orders(ticker);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+
+-- RLS Policies
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own orders"
+  ON orders FOR SELECT
+  USING (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+
+CREATE POLICY "Users can insert own orders"
+  ON orders FOR INSERT
+  WITH CHECK (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+
+CREATE POLICY "Users can update own orders"
+  ON orders FOR UPDATE
+  USING (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+      ]]></sql>
+    </table>
+
+    <table name="fills">
+      <description>Trade executions (fills against orders)</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS fills (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  ticker TEXT NOT NULL,
+  side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+  qty INTEGER NOT NULL CHECK (qty > 0),
+  price NUMERIC(15,4) NOT NULL,
+  fee NUMERIC(15,4) DEFAULT 0.0,
+  filled_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fills_order ON fills(order_id);
+CREATE INDEX IF NOT EXISTS idx_fills_account ON fills(account_id);
+CREATE INDEX IF NOT EXISTS idx_fills_ticker ON fills(ticker);
+
+-- RLS Policies
+ALTER TABLE fills ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own fills"
+  ON fills FOR SELECT
+  USING (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+
+CREATE POLICY "Users can insert own fills"
+  ON fills FOR INSERT
+  WITH CHECK (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+      ]]></sql>
+    </table>
+
+    <table name="positions">
+      <description>Current positions (aggregated from fills)</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS positions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  ticker TEXT NOT NULL,
+  qty INTEGER NOT NULL,
+  avg_cost NUMERIC(15,4) NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(account_id, ticker)
+);
+
+CREATE INDEX IF NOT EXISTS idx_positions_account ON positions(account_id);
+CREATE INDEX IF NOT EXISTS idx_positions_ticker ON positions(ticker);
+
+-- RLS Policies
+ALTER TABLE positions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own positions"
+  ON positions FOR SELECT
+  USING (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+
+CREATE POLICY "Users can insert own positions"
+  ON positions FOR INSERT
+  WITH CHECK (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+
+CREATE POLICY "Users can update own positions"
+  ON positions FOR UPDATE
+  USING (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+
+CREATE POLICY "Users can delete own positions"
+  ON positions FOR DELETE
+  USING (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+      ]]></sql>
+    </table>
+
+    <table name="ledger">
+      <description>Cash ledger entries (all cash movements)</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS ledger (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  amount NUMERIC(15,2) NOT NULL,
+  balance_after NUMERIC(15,2) NOT NULL,
+  entry_type TEXT NOT NULL CHECK (entry_type IN ('INITIAL', 'TRADE', 'FEE', 'DIVIDEND', 'DEPOSIT', 'WITHDRAWAL')),
+  reference_id UUID NULL,
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger(account_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_type ON ledger(entry_type);
+
+-- RLS Policies
+ALTER TABLE ledger ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own ledger"
+  ON ledger FOR SELECT
+  USING (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+
+CREATE POLICY "Users can insert own ledger"
+  ON ledger FOR INSERT
+  WITH CHECK (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+      ]]></sql>
+    </table>
+
+    <table name="portfolio_snapshots">
+      <description>Point-in-time portfolio snapshots</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  equity NUMERIC(15,2) NOT NULL,
+  cash NUMERIC(15,2) NOT NULL,
+  market_value NUMERIC(15,2) NOT NULL,
+  unrealized_pnl NUMERIC(15,2) NOT NULL,
+  realized_pnl NUMERIC(15,2) NOT NULL,
+  snapshot_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_account ON portfolio_snapshots(account_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_time ON portfolio_snapshots(snapshot_at);
+
+-- RLS Policies
+ALTER TABLE portfolio_snapshots ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own snapshots"
+  ON portfolio_snapshots FOR SELECT
+  USING (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+
+CREATE POLICY "Users can insert own snapshots"
+  ON portfolio_snapshots FOR INSERT
+  WITH CHECK (account_id IN (SELECT id FROM accounts WHERE user_id IN (SELECT id FROM profiles WHERE id = auth.uid())));
+      ]]></sql>
+    </table>
+
+    <table name="ml_regimes">
+      <description>ML cluster analysis results (order flow regimes)</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS ml_regimes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticker TEXT NOT NULL,
+  window TEXT NOT NULL,
+  window_start TIMESTAMPTZ NOT NULL,
+  window_end TIMESTAMPTZ NOT NULL,
+  cluster_id INTEGER NOT NULL CHECK (cluster_id IN (0, 1, 2)),
+  pct_ask NUMERIC(5,2),
+  pct_bid NUMERIC(5,2),
+  avg_spread NUMERIC(10,4),
+  avg_trade_size NUMERIC(12,2),
+  volatility NUMERIC(10,6),
+  volume_zscore NUMERIC(8,4),
+  computed_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(ticker, window, window_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_regimes_ticker ON ml_regimes(ticker);
+CREATE INDEX IF NOT EXISTS idx_regimes_window ON ml_regimes(window);
+
+-- RLS Policies (public read for ML data)
+ALTER TABLE ml_regimes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Anyone can view regimes"
+  ON ml_regimes FOR SELECT
+  TO authenticated
+  USING (true);
+
+CREATE POLICY "Authenticated users can insert regimes"
+  ON ml_regimes FOR INSERT
+  TO authenticated
+  WITH CHECK (true);
+      ]]></sql>
+    </table>
+
+    <table name="ml_forecasts">
+      <description>ML forecast predictions (next-window regime probabilities)</description>
+      <sql><![CDATA[
+CREATE TABLE IF NOT EXISTS ml_forecasts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticker TEXT NOT NULL,
+  timeframe TEXT NOT NULL,
+  as_of_date TIMESTAMPTZ NOT NULL,
+  prob_cluster_0 NUMERIC(5,4) NOT NULL,
+  prob_cluster_1 NUMERIC(5,4) NOT NULL,
+  prob_cluster_2 NUMERIC(5,4) NOT NULL,
+  model_type TEXT NOT NULL,
+  computed_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(ticker, timeframe, as_of_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_forecasts_ticker ON ml_forecasts(ticker);
+CREATE INDEX IF NOT EXISTS idx_forecasts_date ON ml_forecasts(as_of_date);
+
+-- RLS Policies (public read for ML data)
+ALTER TABLE ml_forecasts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Anyone can view forecasts"
+  ON ml_forecasts FOR SELECT
+  TO authenticated
+  USING (true);
+
+CREATE POLICY "Authenticated users can insert forecasts"
+  ON ml_forecasts FOR INSERT
+  TO authenticated
+  WITH CHECK (true);
+      ]]></sql>
+    </table>
+
+  </supabase_schema>
+
+  <!-- === NEW FILES === -->
+  <new_files>
+
+    <!-- Authentication Client -->
+    <file path="src/auth_client.py">
+      <purpose>Supabase authentication wrapper with session caching</purpose>
+      <description>
+        Handles user sign-up, sign-in, sign-out, and session persistence.
+        Creates profile records automatically on sign-up.
+      </description>
+      <exports>
+        <function name="sign_in">
+          <signature>sign_in(email: str, password: str) -> Tuple[Session, str]</signature>
+          <returns>Session object and user_id UUID</returns>
+          <raises>AuthError if credentials invalid</raises>
+        </function>
+        <function name="sign_up">
+          <signature>sign_up(email: str, password: str, username: str) -> Tuple[Session, str]</signature>
+          <returns>Session object and user_id UUID</returns>
+          <creates>Profile record with username</creates>
+          <raises>AuthError if email exists or username taken</raises>
+        </function>
+        <function name="get_cached_session">
+          <signature>get_cached_session() -> Optional[Session]</signature>
+          <returns>Cached session if valid, None otherwise</returns>
+          <description>Checks for stored session in local file ~/.stock_viewer_session</description>
+        </function>
+        <function name="sign_out">
+          <signature>sign_out() -> None</signature>
+          <description>Invalidates current session and removes cached file</description>
+        </function>
+      </exports>
+      <implementation_notes>
+        - Use supabase-py client from config.SUPABASE_URL and config.SUPABASE_KEY
+        - Cache session to ~/.stock_viewer_session as JSON
+        - On sign_up, insert into profiles table with username
+        - Handle network errors gracefully (return None from get_cached_session)
+      </implementation_notes>
+    </file>
+
+    <!-- Supabase Data Store -->
+    <file path="src/supabase_store.py">
+      <purpose>CRUD operations for all Supabase tables</purpose>
+      <description>
+        Central module for all database operations. No raw trade/quote storage.
+        All functions are synchronous (use supabase-py's sync client).
+      </description>
+      <exports>
+        <function name="ensure_schema">
+          <signature>ensure_schema() -> None</signature>
+          <description>Execute CREATE TABLE IF NOT EXISTS for all schema tables</description>
+        </function>
+        <function name="create_default_account">
+          <signature>create_default_account(user_id: str, name: str = "Paper-1", starting_cash: float = None) -> Account</signature>
+          <description>Insert new account and ledger INITIAL entry</description>
+        </function>
+        <function name="load_accounts">
+          <signature>load_accounts(user_id: str) -> List[Account]</signature>
+          <description>Fetch all accounts for user</description>
+        </function>
+        <function name="upsert_position">
+          <signature>upsert_position(account_id: str, ticker: str, qty: int, avg_cost: float) -> None</signature>
+          <description>Insert or update position; delete if qty == 0</description>
+        </function>
+        <function name="insert_order">
+          <signature>insert_order(account_id: str, ticker: str, side: str, qty: int, order_type: str, status: str = "PENDING") -> str</signature>
+          <returns>Order ID (UUID)</returns>
+        </function>
+        <function name="update_order_status">
+          <signature>update_order_status(order_id: str, status: str) -> None</signature>
+        </function>
+        <function name="insert_fill">
+          <signature>insert_fill(order_id: str, account_id: str, ticker: str, side: str, qty: int, price: float, fee: float = 0.0) -> str</signature>
+          <returns>Fill ID (UUID)</returns>
+        </function>
+        <function name="insert_ledger">
+          <signature>insert_ledger(account_id: str, amount: float, balance_after: float, entry_type: str, reference_id: str = None, notes: str = None) -> None</signature>
+        </function>
+        <function name="insert_snapshot">
+          <signature>insert_snapshot(account_id: str, equity: float, cash: float, market_value: float, unrealized_pnl: float, realized_pnl: float) -> None</signature>
+        </function>
+        <function name="load_positions">
+          <signature>load_positions(account_id: str) -> List[Position]</signature>
+        </function>
+        <function name="load_orders">
+          <signature>load_orders(account_id: str, limit: int = 100) -> List[Order]</signature>
+          <description>Most recent orders first</description>
+        </function>
+        <function name="load_fills">
+          <signature>load_fills(account_id: str, limit: int = 100) -> List[Fill]</signature>
+        </function>
+        <function name="ml_get_regimes">
+          <signature>ml_get_regimes(ticker: str, window: str) -> pd.DataFrame</signature>
+          <description>Fetch historical regime data for ticker/window</description>
+        </function>
+        <function name="ml_upsert_regimes">
+          <signature>ml_upsert_regimes(df: pd.DataFrame) -> None</signature>
+          <description>Bulk upsert regime rows (ticker, window, window_start unique)</description>
+        </function>
+        <function name="ml_get_forecast">
+          <signature>ml_get_forecast(ticker: str, timeframe: str, as_of_date: datetime) -> Optional[dict]</signature>
+          <description>Fetch most recent forecast for ticker/timeframe at or before as_of_date</description>
+        </function>
+        <function name="ml_upsert_forecast">
+          <signature>ml_upsert_forecast(row: dict) -> None</signature>
+          <description>Insert or update forecast (ticker, timeframe, as_of_date unique)</description>
+        </function>
+      </exports>
+      <implementation_notes>
+        - Use supabase-py client initialized with config.SUPABASE_URL and config.SUPABASE_KEY
+        - All operations use RLS - authenticated user's permissions enforced automatically
+        - Handle Supabase errors gracefully: log and raise custom exceptions
+        - Data model classes imported from data_models.py
+      </implementation_notes>
+    </file>
+
+    <!-- Order Management System -->
+    <file path="src/oms.py">
+      <purpose>Paper trading order management system</purpose>
+      <description>
+        Minimal broker implementation for market orders only.
+        No shorting allowed (must have cash to buy, must have shares to sell).
+        Optional slippage and commission simulation.
+      </description>
+      <class name="Broker">
+        <inherits>QObject</inherits>
+        <signals>
+          <signal name="orderAccepted">
+            <params>order_id: str</params>
+            <description>Emitted when order passes validation and is submitted</description>
+          </signal>
+          <signal name="orderFilled">
+            <params>fill: Fill</params>
+            <description>Emitted when order is executed</description>
+          </signal>
+          <signal name="positionsUpdated">
+            <params>positions: List[Position]</params>
+            <description>Emitted after fill updates positions</description>
+          </signal>
+          <signal name="portfolioUpdated">
+            <params>portfolio: dict</params>
+            <description>Emitted after portfolio revaluation</description>
+            <portfolio_dict>
+              {
+                "equity": float,
+                "cash": float,
+                "market_value": float,
+                "unrealized_pnl": float,
+                "realized_pnl_today": float
+              }
+            </portfolio_dict>
+          </signal>
+          <signal name="omsError">
+            <params>error_msg: str</params>
+            <description>Emitted on order rejection or execution error</description>
+          </signal>
+        </signals>
+        <methods>
+          <method name="__init__">
+            <signature>__init__(account: Account, mark_price_fn: Callable[[str], float])</signature>
+            <description>
+              Initialize broker with account and price lookup function.
+              Load positions and compute initial portfolio state.
+            </description>
+          </method>
+          <method name="submit_market_order">
+            <signature>submit_market_order(ticker: str, side: Literal["BUY", "SELL"], qty: int) -> None</signature>
+            <description>
+              Validate and submit market order.
+              Synchronously execute against mark_price_fn.
+              Update positions, cash, and emit signals.
+            </description>
+            <validation>
+              - qty > 0
+              - BUY: require cash >= qty * mark_price * (1 + slippage)
+              - SELL: require position.qty >= qty
+            </validation>
+            <execution>
+              1. Insert order with status="ACCEPTED"
+              2. Get fill price from mark_price_fn(ticker) + slippage
+              3. Apply commission if enabled
+              4. Insert fill record
+              5. Update position (FIFO average cost via portfolio.apply_fill)
+              6. Insert ledger entry
+              7. Update order status="FILLED"
+              8. Emit signals: orderAccepted, orderFilled, positionsUpdated, portfolioUpdated
+            </execution>
+          </method>
+          <method name="refresh_portfolio">
+            <signature>refresh_portfolio() -> None</signature>
+            <description>
+              Revalue all positions using current mark prices.
+              Compute unrealized P&L and equity.
+              Emit portfolioUpdated signal.
+            </description>
+            <implementation>
+              Use portfolio.revalue(positions, mark_price_fn)
+            </implementation>
+          </method>
+          <method name="get_position">
+            <signature>get_position(ticker: str) -> Optional[Position]</signature>
+            <description>Return current position for ticker or None</description>
+          </method>
+          <method name="get_buying_power">
+            <signature>get_buying_power() -> float</signature>
+            <description>Return available cash for new buys</description>
+          </method>
+        </methods>
+      </class>
+      <implementation_notes>
+        - All operations synchronous (executed immediately on GUI thread)
+        - For production: move execution to worker thread
+        - Slippage: if config.ENABLE_SLIPPAGE, fill_price = mark * (1 + random.uniform(-config.SLIPPAGE_BPS, config.SLIPPAGE_BPS) / 10000)
+        - Commission: fee = max(qty * config.COMMISSION_PER_SHARE, config.MIN_COMMISSION) if config.ENABLE_COMMISSION
+        - No partial fills in Phase 2
+        - No limit/stop orders in Phase 2
+      </implementation_notes>
+    </file>
+
+    <!-- Portfolio Computation -->
+    <file path="src/portfolio.py">
+      <purpose>Position and portfolio calculation utilities</purpose>
+      <description>
+        Pure functions for FIFO cost basis tracking and P&L computation.
+        No database or GUI dependencies.
+      </description>
+      <exports>
+        <function name="apply_fill">
+          <signature>apply_fill(account: Account, position_map: Dict[str, Position], fill: Fill) -> Tuple[Dict[str, Position], float, float]</signature>
+          <returns>(updated_position_map, cash_delta, realized_pnl)</returns>
+          <description>
+            Apply fill to position map using FIFO cost basis.
+            BUY: Increase qty, update weighted average cost
+            SELL: Decrease qty, compute realized P&L
+          </description>
+          <algorithm>
+            BUY:
+              new_qty = old_qty + fill.qty
+              new_avg_cost = (old_qty * old_avg_cost + fill.qty * fill.price) / new_qty
+              cash_delta = -(fill.qty * fill.price + fill.fee)
+              realized_pnl = -fill.fee
+
+            SELL:
+              new_qty = old_qty - fill.qty
+              cash_delta = fill.qty * fill.price - fill.fee
+              realized_pnl = fill.qty * (fill.price - position.avg_cost) - fill.fee
+              new_avg_cost = position.avg_cost (unchanged)
+
+            If new_qty == 0, remove from position_map
+          </algorithm>
+        </function>
+        <function name="revalue">
+          <signature>revalue(positions: List[Position], mark_price_fn: Callable[[str], float]) -> Tuple[float, float]</signature>
+          <returns>(total_unrealized_pnl, total_market_value)</returns>
+          <description>
+            Compute unrealized P&L for all positions using current mark prices.
+            unrealized_pnl = sum((mark_price - avg_cost) * qty for each position)
+            market_value = sum(mark_price * qty for each position)
+          </description>
+        </function>
+        <function name="compute_equity">
+          <signature>compute_equity(cash: float, market_value: float) -> float</signature>
+          <returns>cash + market_value</returns>
+        </function>
+      </exports>
+      <implementation_notes>
+        - All functions pure (no side effects)
+        - Use Decimal for precise monetary calculations (optional but recommended)
+        - Positions with qty=0 should be removed from position_map
+      </implementation_notes>
+    </file>
+
+    <!-- ML Order Flow Analysis -->
+    <file path="src/ml_orderflow.py">
+      <purpose>Machine learning for order flow regime detection and forecasting</purpose>
+      <description>
+        Compute features from trade/quote data, cluster into regimes (buyer/balanced/seller),
+        and forecast next-window regime probabilities. Cache results in Supabase.
+      </description>
+      <exports>
+        <function name="compute_features">
+          <signature>compute_features(ticker: str, window: str, trades: pd.DataFrame, quotes: pd.DataFrame) -> pd.DataFrame</signature>
+          <returns>DataFrame with columns: [window_start, window_end, pct_ask, pct_bid, avg_spread, avg_trade_size, volatility, volume_zscore]</returns>
+          <description>
+            Split trades/quotes into windows (1D/1W/1M/3M/1Y), compute features per window.
+          </description>
+          <features>
+            <feature name="pct_ask">
+              <formula>(trades on ask side / total trades) * 100</formula>
+              <classification>
+                Trade is "on ask" if trade.price >= quote.ask (within time window)
+                Trade is "on bid" if trade.price &lt;= quote.bid
+                Else: midpoint (not ask or bid)
+              </classification>
+            </feature>
+            <feature name="pct_bid">
+              <formula>(trades on bid side / total trades) * 100</formula>
+            </feature>
+            <feature name="avg_spread">
+              <formula>mean(quote.ask - quote.bid) over window</formula>
+              <units>dollars</units>
+            </feature>
+            <feature name="avg_trade_size">
+              <formula>mean(trade.size) over window</formula>
+              <units>shares</units>
+            </feature>
+            <feature name="volatility">
+              <formula>std(log(price[t] / price[t-1])) * sqrt(252) for daily windows, annualized</formula>
+            </feature>
+            <feature name="volume_zscore">
+              <formula>(window_volume - rolling_mean_volume) / rolling_std_volume</formula>
+              <description>Z-score of volume relative to past N windows</description>
+            </feature>
+          </features>
+          <implementation>
+            - Merge trades and quotes on timestamp (as-of join)
+            - Group by window boundaries
+            - Compute features per group
+            - Handle missing data: forward-fill quotes, drop windows with insufficient data
+          </implementation>
+        </function>
+        <function name="cluster_regimes">
+          <signature>cluster_regimes(features_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]</signature>
+          <returns>(cluster_labels, cluster_centroids)</returns>
+          <description>
+            Apply KMeans clustering (k=3) to features.
+            Clusters represent: buyer-dominant (high pct_ask), balanced, seller-dominant (high pct_bid).
+          </description>
+          <algorithm>
+            1. Normalize features (StandardScaler)
+            2. KMeans(n_clusters=config.ML_KMEANS_CLUSTERS, random_state=42)
+            3. Fit on features_df
+            4. Return labels and centroids
+          </algorithm>
+          <cluster_interpretation>
+            Cluster 0: Buyer-dominant (high pct_ask, low pct_bid)
+            Cluster 1: Balanced (mid pct_ask, mid pct_bid)
+            Cluster 2: Seller-dominant (low pct_ask, high pct_bid)
+            (Actual assignment may vary; inspect centroids to determine)
+          </cluster_interpretation>
+        </function>
+        <function name="forecast_next_window">
+          <signature>forecast_next_window(history_df: pd.DataFrame) -> dict</signature>
+          <returns>{"prob_cluster_0": float, "prob_cluster_1": float, "prob_cluster_2": float, "model_type": str}</returns>
+          <description>
+            Train supervised model on historical cluster sequences to predict next window's regime.
+            Use LogisticRegression or RandomForestClassifier.
+          </description>
+          <algorithm>
+            1. Create lag features: cluster_id[t-1], cluster_id[t-2], ...
+            2. Target: cluster_id[t]
+            3. Split train/test (last 20% for validation)
+            4. Train LogisticRegression (multi-class)
+            5. Predict probabilities for next window (using most recent lags)
+            6. Return probability distribution
+          </algorithm>
+          <implementation_notes>
+            - Require at least 30 windows of history for training
+            - If insufficient data, return uniform probabilities {0.33, 0.33, 0.33}
+            - Model type: "LogisticRegression" or "RandomForest"
+          </implementation_notes>
+        </function>
+        <function name="analyze_or_load_cached">
+          <signature>analyze_or_load_cached(ticker: str, windows: List[str]) -> dict</signature>
+          <returns>
+            {
+              "regimes": pd.DataFrame (historical regimes for all windows),
+              "forecasts": dict of window -> forecast_dict
+            }
+          </returns>
+          <description>
+            High-level function: check Supabase cache, fetch if fresh enough, else recompute.
+          </description>
+          <algorithm>
+            1. For each window in windows:
+               a. Query ml_regimes for ticker/window (last 30 days)
+               b. If cached data is recent (computed_at within 24 hours), use cache
+               c. Else: fetch trade/quote data from Polygon.io, compute features, cluster, forecast
+               d. Upsert new regimes and forecast to Supabase
+            2. Return combined results
+          </algorithm>
+          <cache_policy>
+            - Regime data: cache valid for 24 hours
+            - Forecast data: cache valid for 24 hours
+            - If config.ML_CACHE_ENABLED == False, always recompute
+          </cache_policy>
+        </function>
+      </exports>
+      <dependencies>
+        - pandas, numpy, scikit-learn
+        - polygon_client for fetching historical trades/quotes
+        - supabase_store for caching
+      </dependencies>
+      <implementation_notes>
+        - All ML operations run synchronously in Phase 2 (use worker thread in future)
+        - Polygon.io delayed plan: historical trades/quotes available with ~15 min delay
+        - For 1D/1W windows, use daily aggregates instead of tick data (performance)
+        - For 1M/3M/1Y windows, definitely use daily aggregates
+      </implementation_notes>
+    </file>
+
+    <!-- Authentication Dialog -->
+    <file path="src/gui_auth.py">
+      <purpose>Login and sign-up modal dialog</purpose>
+      <description>
+        QDialog with tabs for Login and Sign Up modes.
+        Calls auth_client functions and returns session or raises on cancel.
+      </description>
+      <class name="AuthDialog">
+        <inherits>QDialog</inherits>
+        <ui_components>
+          <tabs>
+            <tab name="Login">
+              <field>Email (QLineEdit)</field>
+              <field>Password (QLineEdit, echoMode=Password)</field>
+              <button>Login (QPushButton)</button>
+            </tab>
+            <tab name="Sign Up">
+              <field>Email (QLineEdit)</field>
+              <field>Username (QLineEdit)</field>
+              <field>Password (QLineEdit, echoMode=Password)</field>
+              <field>Confirm Password (QLineEdit, echoMode=Password)</field>
+              <button>Sign Up (QPushButton)</button>
+            </tab>
+          </tabs>
+          <status_label>QLabel for error messages (red text)</status_label>
+        </ui_components>
+        <methods>
+          <method name="exec_">
+            <returns>Session object if successful, None if cancelled</returns>
+            <description>
+              Show modal dialog, wait for user action.
+              On Login: call auth_client.sign_in(email, password)
+              On Sign Up: validate passwords match, call auth_client.sign_up(email, password, username)
+              On success: accept dialog and return session
+              On error: show error message in status_label, keep dialog open
+            </description>
+          </method>
+        </methods>
+        <implementation_notes>
+          - Make dialog modal (setModal(True))
+          - Disable parent window while showing
+          - ESC key or window close = cancel (return None)
+          - Validate email format (simple regex)
+          - Validate password strength (min 8 chars)
+          - Show loading spinner during auth API calls (optional)
+        </implementation_notes>
+      </class>
+    </file>
+
+    <!-- Trade Tab UI -->
+    <file path="src/gui_trade.py">
+      <purpose>Trade tab widgets: order entry, blotter, positions table, portfolio header</purpose>
+      <description>
+        Complete Trade tab implementation as a single QWidget.
+        Non-invasive: only imported and added as a tab to existing MainWindow.
+      </description>
+      <class name="TradeTab">
+        <inherits>QWidget</inherits>
+        <constructor>
+          <signature>__init__(broker: Broker, mark_price_fn: Callable[[str], float])</signature>
+        </constructor>
+        <layout>
+          <sections>
+            <section name="Portfolio Header">
+              <fields>
+                <field>Equity: $X,XXX.XX (colored: green if > starting, red if &lt;)</field>
+                <field>Cash: $X,XXX.XX</field>
+                <field>Market Value: $X,XXX.XX</field>
+                <field>Unrealized P&amp;L: $X,XXX.XX (±X.XX%)</field>
+                <field>Realized P&amp;L (Today): $X,XXX.XX</field>
+              </fields>
+            </section>
+            <section name="Order Entry Ticket">
+              <fields>
+                <field>Ticker: QLineEdit (uppercase, max 5 chars)</field>
+                <field>Side: QComboBox ["BUY", "SELL"]</field>
+                <field>Quantity: QSpinBox (min=1, max=999999)</field>
+                <field>Order Type: QLabel "MARKET" (greyed out; only market orders in Phase 2)</field>
+                <button>Submit Order (QPushButton, large, colored: green for BUY, red for SELL)</button>
+              </fields>
+              <behavior>
+                On Submit:
+                  1. Validate ticker is loaded (current ticker in MainWindow)
+                  2. Call broker.submit_market_order(ticker, side, qty)
+                  3. On success: show confirmation, clear fields
+                  4. On error: show error message from omsError signal
+              </behavior>
+            </section>
+            <section name="Positions Table">
+              <columns>Ticker | Qty | Avg Cost | Mark Price | Market Value | Unrealized P&amp;L | Unrealized P&amp;L %</columns>
+              <data_source>broker.positionsUpdated signal</data_source>
+              <features>
+                - Sortable columns
+                - Color code P&amp;L (green/red)
+                - Click row to load ticker in Info/Chart tabs (emit signal to MainWindow)
+              </features>
+            </section>
+            <section name="Order Blotter">
+              <columns>Time | Ticker | Side | Qty | Type | Status | Fill Price | Notes</columns>
+              <data_source>broker.orderAccepted, broker.orderFilled signals</data_source>
+              <features>
+                - Auto-scroll to newest order
+                - Color code side (green BUY, red SELL)
+                - Show most recent 100 orders
+                - Load from Supabase on tab open
+              </features>
+            </section>
+          </sections>
+        </layout>
+        <methods>
+          <method name="updatePositions">
+            <signature>updatePositions(positions: List[Position]) -> None</signature>
+            <description>Refresh positions table with new data</description>
+          </method>
+          <method name="updatePortfolio">
+            <signature>updatePortfolio(portfolio: dict) -> None</signature>
+            <description>Update portfolio header labels</description>
+          </method>
+          <method name="onOrderAccepted">
+            <description>Append row to blotter with status="ACCEPTED"</description>
+          </method>
+          <method name="onOrderFilled">
+            <description>Update blotter row with fill price and status="FILLED"</description>
+          </method>
+        </methods>
+        <signals>
+          <signal name="loadTickerRequested">
+            <params>ticker: str</params>
+            <description>Emitted when user clicks position row to load ticker in other tabs</description>
+          </signal>
+        </signals>
+      </class>
+      <implementation_notes>
+        - Use QTableWidget for positions and blotter
+        - Format currency with _fmt_price helper from gui.py (import)
+        - Update portfolio header immediately on portfolioUpdated signal
+        - Blotter should be read-only (no editing)
+        - Positions table should be read-only (no manual edits)
+      </implementation_notes>
+    </file>
+
+    <!-- Time & Sales Tape Widget -->
+    <file path="src/gui_tape.py">
+      <purpose>Time &amp; Sales tape (trade tape) widget for Info tab</purpose>
+      <description>
+        Displays today's trades in a scrollable table.
+        Backfills on ticker load, appends live trades from WebSocket.
+        Daily rollover when first trade of new day arrives.
+      </description>
+      <class name="TapeWidget">
+        <inherits>QWidget</inherits>
+        <constructor>
+          <signature>__init__()</signature>
+        </constructor>
+        <layout>
+          <header>QLabel "Time &amp; Sales" (bold)</header>
+          <table>QTableWidget with columns: Time | Price | Size | Exchange</table>
+          <auto_scroll_checkbox>QCheckBox "Auto-scroll" (default: checked)</auto_scroll_checkbox>
+        </layout>
+        <methods>
+          <method name="loadTicker">
+            <signature>loadTicker(ticker: str) -> None</signature>
+            <description>
+              Clear table, fetch today's trades via Polygon.io, populate table.
+              Store current_tape_date (ET date of today).
+            </description>
+            <algorithm>
+              1. Clear table (setRowCount(0))
+              2. Get today's ET date (use _get_et_date helper)
+              3. Fetch trades: polygon_client.fetch_trades_today(ticker)
+              4. Populate table with trade rows (most recent at bottom)
+              5. Set current_tape_date = today's ET date
+              6. Scroll to bottom if auto-scroll enabled
+            </algorithm>
+          </method>
+          <method name="appendTrade">
+            <signature>appendTrade(trade: dict) -> None</signature>
+            <description>
+              Append single trade to table. Check for daily rollover.
+            </description>
+            <algorithm>
+              1. Parse trade timestamp to ET date
+              2. If ET date > current_tape_date:
+                 - Clear table
+                 - Set current_tape_date = new ET date
+                 - Backfill today's trades (call loadTicker)
+              3. Else:
+                 - Append row to table
+                 - Format: time (HH:MM:SS ET), price ($X.XX), size (X,XXX), exchange (code)
+                 - Auto-scroll to bottom if enabled and scrollbar at bottom
+              4. If table rowCount > config.TAPE_MAX_ROWS:
+                 - Remove oldest rows (keep most recent TAPE_MAX_ROWS)
+            </algorithm>
+          </method>
+          <method name="clear">
+            <signature>clear() -> None</signature>
+            <description>Clear all rows and reset current_tape_date</description>
+          </method>
+        </methods>
+        <helpers>
+          <function name="_get_et_date">
+            <signature>_get_et_date(dt: datetime) -> date</signature>
+            <description>Convert UTC datetime to ET date (handle DST)</description>
+          </function>
+          <function name="_is_at_bottom">
+            <signature>_is_at_bottom() -> bool</signature>
+            <description>Check if table scrollbar is at bottom position</description>
+          </function>
+        </helpers>
+      </class>
+      <implementation_notes>
+        - Use QTableWidget with 4 columns
+        - Trade time formatted as HH:MM:SS (ET, 24-hour)
+        - Price formatted as $X.XX (2 decimals)
+        - Size formatted with thousand separators (e.g., 1,500)
+        - Exchange: 1-char code (e.g., "Q" for Nasdaq)
+        - Auto-scroll: only scroll if user is already at bottom (don't interrupt manual scrolling)
+        - Backfill uses /v3/trades/{ticker}?timestamp.gte={today_start_ms}&limit=1000
+        - Daily rollover: detect when trade.timestamp (ET) > current_tape_date
+      </implementation_notes>
+    </file>
+
+  </new_files>
+
+  <!-- === EXISTING FILE PATCHES === -->
+  <patches>
+
+    <!-- Patch 1: gui.py - Add authentication, broker, Trade tab, Time & Sales -->
+    <patch file="src/gui.py">
+      <instructions>
+        Add imports, authentication flow, broker initialization, Trade tab, and Time & Sales widget.
+        Insert code at specified locations within MainWindow class.
+      </instructions>
+
+      <add_imports>
+# Phase 2 imports
+from src.auth_client import sign_in, sign_up, get_cached_session, sign_out
+from src.supabase_store import (
+    ensure_schema,
+    load_accounts,
+    create_default_account,
+    load_positions,
+)
+from src.oms import Broker
+from src.gui_trade import TradeTab
+from src.gui_auth import AuthDialog
+from src.gui_tape import TapeWidget
+      </add_imports>
+
+      <insert location="MainWindow.__init__, very beginning (after super().__init__)">
+        <marker>After: super().__init__()</marker>
+        <code><![CDATA[
+        # === PHASE 2: Authentication ===
+        ensure_schema()  # Create Supabase tables if needed
+        session = get_cached_session()
+        if not session:
+            auth_dialog = AuthDialog()
+            session = auth_dialog.exec_()
+            if not session:
+                # User cancelled login
+                QMessageBox.critical(self, "Authentication Required", "You must log in to use this application.")
+                sys.exit(0)
+        
+        self.user_id = session.user.id
+        self.session = session
+        
+        # Load or create default account
+        accounts = load_accounts(self.user_id)
+        if not accounts:
+            self.active_account = create_default_account(self.user_id, name="Paper-1", starting_cash=config.STARTING_CAPITAL)
+        else:
+            self.active_account = accounts[0]
+        
+        # Will initialize broker after price functions are set up
+        self.broker = None
+        ]]></code>
+      </insert>
+
+      <insert location="MainWindow.__init__, after ticker input and before tabs creation">
+        <marker>After: self.loadButton = QPushButton("Load")</marker>
+        <code><![CDATA[
+        # === PHASE 2: Broker Initialization ===
+        # Initialize broker with mark price function
+        self.broker = Broker(self.active_account, mark_price_fn=self._mark_price)
+        
+        # Connect broker signals to handlers
+        self.broker.orderAccepted.connect(self.onOrderAccepted)
+        self.broker.orderFilled.connect(self.onOrderFilled)
+        self.broker.positionsUpdated.connect(self.onPositionsUpdated)
+        self.broker.portfolioUpdated.connect(self.onPortfolioUpdated)
+        self.broker.omsError.connect(self.onOmsError)
+        ]]></code>
+      </insert>
+
+      <insert location="MainWindow.__init__, after tabs are created (after self.tabs.addTab(self.chartTab, 'Chart'))">
+        <marker>After: self.tabs.addTab(self.chartTab, "Chart")</marker>
+        <code><![CDATA[
+        # === PHASE 2: Add Trade Tab ===
+        self.tradeTab = TradeTab(self.broker, self._mark_price)
+        self.tabs.addTab(self.tradeTab, "Trade")
+        
+        # Connect trade tab signals
+        self.tradeTab.loadTickerRequested.connect(self.onLoadTickerFromTrade)
+        ]]></code>
+      </insert>
+
+      <insert location="InfoTab.__init__, at the end of layout setup">
+        <marker>After: self.setLayout(main_layout) in InfoTab</marker>
+        <code><![CDATA[
+        # === PHASE 2: Add Time & Sales Tape to Info Tab ===
+        self.tapeWidget = TapeWidget()
+        main_layout.addWidget(self.tapeWidget)
+        ]]></code>
+      </insert>
+
+      <insert location="MainWindow class, add new methods at the end">
+        <marker>End of MainWindow class</marker>
+        <code><![CDATA[
+        # === PHASE 2: Mark Price Function ===
+        def _mark_price(self, ticker: str) -> float:
+            """
+            Return current mark price for ticker based on config.MARK_PRICE_SOURCE.
+            
+            'LAST_TRADE': return last trade price from WebSocket
+            'MIDPOINT': return (bid + ask) / 2
+            
+            Falls back to last trade price if midpoint unavailable.
+            """
+            if config.MARK_PRICE_SOURCE == "MIDPOINT":
+                if hasattr(self, 'current_bid') and hasattr(self, 'current_ask'):
+                    if self.current_bid and self.current_ask and self.current_bid > 0 and self.current_ask > 0:
+                        return (self.current_bid + self.current_ask) / 2.0
+            
+            # Fallback to last trade price
+            if hasattr(self, 'current_price') and self.current_price:
+                return self.current_price
+            
+            # Last resort: return 0 (will cause broker to reject order)
+            return 0.0
+        
+        # === PHASE 2: Broker Signal Handlers ===
+        @pyqtSlot(str)
+        def onOrderAccepted(self, order_id: str):
+            """Handle order accepted event."""
+            # Trade tab will handle blotter update
+            pass
+        
+        @pyqtSlot(object)
+        def onOrderFilled(self, fill):
+            """Handle order filled event."""
+            # Trade tab will handle blotter and position updates
+            pass
+        
+        @pyqtSlot(list)
+        def onPositionsUpdated(self, positions):
+            """Update Trade tab positions display."""
+            if hasattr(self, 'tradeTab'):
+                self.tradeTab.updatePositions(positions)
+        
+        @pyqtSlot(dict)
+        def onPortfolioUpdated(self, portfolio):
+            """Update Trade tab portfolio header."""
+            if hasattr(self, 'tradeTab'):
+                self.tradeTab.updatePortfolio(portfolio)
+        
+        @pyqtSlot(str)
+        def onOmsError(self, error_msg: str):
+            """Display OMS error in status bar or message box."""
+            QMessageBox.warning(self, "Order Error", error_msg)
+        
+        @pyqtSlot(str)
+        def onLoadTickerFromTrade(self, ticker: str):
+            """Load ticker when requested from Trade tab position click."""
+            self.tickerInput.setText(ticker)
+            self.loadTicker()
+        ]]></code>
+      </insert>
+
+      <insert location="MainWindow.onPriceUpdate method, at the end">
+        <marker>End of onPriceUpdate method (after updating price labels)</marker>
+        <code><![CDATA[
+        # === PHASE 2: Refresh Portfolio on Price Update ===
+        try:
+            if self.broker:
+                self.broker.refresh_portfolio()
+        except Exception as e:
+            logging.debug(f"Portfolio refresh error: {e}")
+        ]]></code>
+      </insert>
+
+      <insert location="MainWindow.onTradeEvent method (WebSocket trade handler), at the end">
+        <marker>End of onTradeEvent method (after emitting price signals)</marker>
+        <code><![CDATA[
+        # === PHASE 2: Append Trade to Time & Sales Tape ===
+        try:
+            if hasattr(self, 'infoTab') and hasattr(self.infoTab, 'tapeWidget'):
+                self.infoTab.tapeWidget.appendTrade(trade)
+        except Exception as e:
+            logging.debug(f"Tape append error: {e}")
+        ]]></code>
+      </insert>
+
+      <insert location="MainWindow.loadTicker method, after static data is loaded and before WebSocket starts">
+        <marker>After: self.keysUpdate.emit(...) and before WebSocket start</marker>
+        <code><![CDATA[
+        # === PHASE 2: Load Time & Sales Tape ===
+        try:
+            if hasattr(self, 'infoTab') and hasattr(self.infoTab, 'tapeWidget'):
+                if config.TAPE_BACKFILL_ENABLED:
+                    self.infoTab.tapeWidget.loadTicker(ticker)
+        except Exception as e:
+            logging.warning(f"Tape load error: {e}")
+        ]]></code>
+      </insert>
+
+      <insert location="MainWindow.closeEvent, before calling super().closeEvent(event)">
+        <marker>Beginning of closeEvent method</marker>
+        <code><![CDATA[
+        # === PHASE 2: Sign Out on Close ===
+        try:
+            sign_out()
+        except Exception as e:
+            logging.debug(f"Sign out error: {e}")
+        ]]></code>
+      </insert>
+
+    </patch>
+
+    <!-- Patch 2: polygon_client.py - Add trade/quote backfill methods -->
+    <patch file="src/polygon_client.py">
+      <instructions>
+        Add new methods to PolygonClient class for fetching historical trades and quotes.
+        These are used by Time & Sales tape and ML module.
+      </instructions>
+
+      <append_to_class name="PolygonClient">
+        <code><![CDATA[
+    def fetch_trades_today(self, ticker: str) -> List[dict]:
+        """
+        Fetch all trades for ticker from today's ET market open until now.
+        
+        Returns list of trade dicts with keys: timestamp, price, size, exchange
+        """
+        try:
+            # Get today's date in ET
+            et_now = datetime.now(pytz.timezone('America/New_York'))
+            et_today = et_now.date()
+            
+            # Market open: 9:30 AM ET
+            market_open = datetime.combine(et_today, datetime.min.time().replace(hour=9, minute=30))
+            market_open = pytz.timezone('America/New_York').localize(market_open)
+            
+            # Convert to milliseconds timestamp
+            start_ms = int(market_open.timestamp() * 1000)
+            
+            # Fetch trades
+            url = f"https://api.polygon.io/v3/trades/{ticker}"
+            params = {
+                "timestamp.gte": start_ms,
+                "limit": 1000,
+                "sort": "timestamp",
+                "order": "asc"
+            }
+            
+            response = self.client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            trades = []
+            for t in data.get("results", []):
+                trades.append({
+                    "timestamp": t.get("sip_timestamp"),  # nanoseconds
+                    "price": t.get("price"),
+                    "size": t.get("size"),
+                    "exchange": t.get("exchange", ""),
+                })
+            
+            return trades
+        
+        except Exception as e:
+            logging.error(f"Error fetching today's trades for {ticker}: {e}")
+            return []
+    
+    def fetch_quotes_range(self, ticker: str, start_dt: datetime, end_dt: datetime) -> List[dict]:
+        """
+        Fetch quote data for ticker in specified datetime range.
+        
+        Returns list of quote dicts with keys: timestamp, bid, ask, bid_size, ask_size
+        """
+        try:
+            start_ms = int(start_dt.timestamp() * 1000)
+            end_ms = int(end_dt.timestamp() * 1000)
+            
+            url = f"https://api.polygon.io/v3/quotes/{ticker}"
+            params = {
+                "timestamp.gte": start_ms,
+                "timestamp.lte": end_ms,
+                "limit": 5000,
+                "sort": "timestamp",
+                "order": "asc"
+            }
+            
+            response = self.client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            quotes = []
+            for q in data.get("results", []):
+                quotes.append({
+                    "timestamp": q.get("sip_timestamp"),  # nanoseconds
+                    "bid": q.get("bid_price"),
+                    "ask": q.get("ask_price"),
+                    "bid_size": q.get("bid_size"),
+                    "ask_size": q.get("ask_size"),
+                })
+            
+            return quotes
+        
+        except Exception as e:
+            logging.error(f"Error fetching quotes for {ticker}: {e}")
+            return []
+        ]]></code>
+      </append_to_class>
+    </patch>
+
+    <!-- Patch 3: data_models.py - Add Phase 2 dataclasses -->
+    <patch file="src/data_models.py">
+      <instructions>
+        Add new dataclasses for Account, Order, Fill, Position, PortfolioSnapshot.
+        These may already exist from earlier work; only add if missing.
+      </instructions>
+
+      <append_if_missing>
+        <code><![CDATA[
+from dataclasses import dataclass, field
+from typing import Optional
+from datetime import datetime
+
+@dataclass
+class Account:
+    """Trading account (paper trading portfolio)."""
+    id: str
+    user_id: str
+    name: str
+    base_ccy: str = "USD"
+    starting_cash: float = 10000.0
+    cash: float = 10000.0
+    equity: float = 10000.0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+@dataclass
+class Order:
+    """Order record."""
+    id: str
+    account_id: str
+    ticker: str
+    side: str  # "BUY" or "SELL"
+    qty: int
+    order_type: str  # "MARKET", "LIMIT", "STOP"
+    status: str  # "PENDING", "ACCEPTED", "FILLED", "PARTIAL", "CANCELLED", "REJECTED"
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    submitted_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+@dataclass
+class Fill:
+    """Trade execution (fill)."""
+    id: str
+    order_id: str
+    account_id: str
+    ticker: str
+    side: str  # "BUY" or "SELL"
+    qty: int
+    price: float
+    fee: float = 0.0
+    filled_at: Optional[datetime] = None
+
+@dataclass
+class Position:
+    """Current position in a ticker."""
+    id: Optional[str]
+    account_id: str
+    ticker: str
+    qty: int
+    avg_cost: float
+    updated_at: Optional[datetime] = None
+
+@dataclass
+class PortfolioSnapshot:
+    """Point-in-time portfolio snapshot."""
+    id: Optional[str]
+    account_id: str
+    equity: float
+    cash: float
+    market_value: float
+    unrealized_pnl: float
+    realized_pnl: float
+    snapshot_at: Optional[datetime] = None
+        ]]></code>
+      </append_if_missing>
+    </patch>
+
+  </patches>
+
+  <!-- === IMPLEMENTATION SEQUENCE === -->
+  <implementation_sequence>
+    <instruction>Implement in this order to minimize dependencies and enable incremental testing.</instruction>
+    
+    <step number="1">
+      <files>config.py</files>
+      <action>Append Phase 2 configuration constants</action>
+      <test>Verify imports work</test>
+    </step>
+    
+    <step number="2">
+      <files>src/data_models.py</files>
+      <action>Add Phase 2 dataclasses</action>
+      <test>Import and instantiate each dataclass</test>
+    </step>
+    
+    <step number="3">
+      <files>src/auth_client.py</files>
+      <action>Implement authentication wrapper</action>
+      <test>Test sign_up, sign_in, get_cached_session, sign_out</test>
+      <dependencies>Supabase project must be created first</dependencies>
+    </step>
+    
+    <step number="4">
+      <files>src/supabase_store.py</files>
+      <action>Implement database CRUD operations</action>
+      <test>Run ensure_schema(), create test account, insert/fetch data</test>
+      <dependencies>auth_client, data_models</dependencies>
+    </step>
+    
+    <step number="5">
+      <files>src/portfolio.py</files>
+      <action>Implement portfolio calculation utilities</action>
+      <test>Unit test apply_fill and revalue with sample data</test>
+      <dependencies>data_models</dependencies>
+    </step>
+    
+    <step number="6">
+      <files>src/oms.py</files>
+      <action>Implement paper trading broker</action>
+      <test>Submit test orders, verify fills and position updates</test>
+      <dependencies>portfolio, supabase_store, data_models</dependencies>
+    </step>
+    
+    <step number="7">
+      <files>src/gui_auth.py</files>
+      <action>Implement authentication dialog</action>
+      <test>Show dialog, test sign-up and login flows</test>
+      <dependencies>auth_client</dependencies>
+    </step>
+    
+    <step number="8">
+      <files>src/gui_tape.py</files>
+      <action>Implement Time & Sales tape widget</action>
+      <test>Load ticker, verify backfill, append fake trades</test>
+      <dependencies>polygon_client</dependencies>
+    </step>
+    
+    <step number="9">
+      <files>src/gui_trade.py</files>
+      <action>Implement Trade tab UI</action>
+      <test>Display portfolio, submit test order, view positions</test>
+      <dependencies>oms, data_models</dependencies>
+    </step>
+    
+    <step number="10">
+      <files>src/polygon_client.py (patch)</files>
+      <action>Add fetch_trades_today and fetch_quotes_range methods</action>
+      <test>Fetch today's trades for test ticker</test>
+    </step>
+    
+    <step number="11">
+      <files>src/gui.py (patch)</files>
+      <action>Integrate all Phase 2 components into MainWindow</action>
+      <test>Full application: login, load ticker, submit order, view tape</action>
+      <dependencies>All Phase 2 modules</dependencies>
+    </step>
+    
+    <step number="12">
+      <files>src/ml_orderflow.py</files>
+      <action>Implement ML order flow analysis</action>
+      <test>Fetch historical data, compute features, cluster regimes</test>
+      <dependencies>polygon_client, supabase_store</dependencies>
+      <note>This is the most complex module; implement last</note>
+    </step>
+  </implementation_sequence>
+
+  <!-- === TESTING CHECKLIST === -->
+  <testing_checklist>
+    <test>Sign up new user successfully</test>
+    <test>Log in with existing credentials</test>
+    <test>Cached session persists across app restarts</test>
+    <test>Load ticker displays data in Info and Chart tabs</test>
+    <test>Time & Sales tape backfills today's trades</test>
+    <test>Time & Sales tape appends live trades from WebSocket</test>
+    <test>Trade tab displays portfolio header correctly</test>
+    <test>Submit BUY market order successfully</test>
+    <test>Position appears in positions table after fill</test>
+    <test>Submit SELL market order to close position</test>
+    <test>Portfolio updates on price changes (refresh_portfolio)</test>
+    <test>Order blotter shows order history</test>
+    <test>Switching tickers updates all tabs without errors</test>
+    <test>ML analysis caches results in Supabase</test>
+    <test>ML analysis loads from cache on subsequent runs</test>
+    <test>Sign out clears session and returns to login</test>
+  </testing_checklist>
+
+  <!-- === KNOWN LIMITATIONS === -->
+  <known_limitations>
+    <limitation>Only market orders supported (no limit/stop orders)</limitation>
+    <limitation>No shorting (must own shares to sell)</limitation>
+    <limitation>No partial fills (all-or-nothing execution)</limitation>
+    <limitation>Slippage and commission are optional and simplified</limitation>
+    <limitation>ML analysis runs synchronously (may block UI briefly)</limitation>
+    <limitation>Time & Sales tape limited to today's trades (no multi-day history)</limitation>
+    <limitation>Single account per user (no account switching UI)</limitation>
+    <limitation>Delayed data (~15 minutes) for all market data</limitation>
+  </known_limitations>
+
+  <!-- === FUTURE ENHANCEMENTS (Phase 3+) === -->
+  <future_enhancements>
+    <enhancement>Limit and stop orders</enhancement>
+    <enhancement>Short selling with margin tracking</enhancement>
+    <enhancement>Multi-account support with account selector</enhancement>
+    <enhancement>Real-time data upgrade option</enhancement>
+    <enhancement>Options trading support</enhancement>
+    <enhancement>Backtesting engine using historical data</enhancement>
+    <enhancement>Algorithmic trading strategies (auto-execution)</enhancement>
+    <enhancement>News feed integration in Trade tab</enhancement>
+    <enhancement>Performance analytics and charts (equity curve)</enhancement>
+    <enhancement>Risk management rules (max position size, daily loss limit)</enhancement>
+  </future_enhancements>
+
+</change_spec>
