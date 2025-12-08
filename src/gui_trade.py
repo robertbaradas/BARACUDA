@@ -264,9 +264,9 @@ class TradeTab(QtWidgets.QWidget):
         table.setItem(row, col, QtWidgets.QTableWidgetItem(text))
 
     def _fmt_price(self, value: Optional[float]) -> str:
-        from src.gui import _fmt_price as gui_fmt  # Lazy import to avoid circular dependency
+        from src.utils.formatting import _fmt_price
 
-        return gui_fmt(value)
+        return _fmt_price(value)
 
     def _on_position_double_clicked(self, row: int, column: int) -> None:  # noqa: ARG002
         ticker_item = self.tbl_positions.item(row, 0)
