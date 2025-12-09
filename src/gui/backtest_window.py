@@ -7,9 +7,11 @@ from PyQt5 import QtCore, QtWidgets
 
 from src.services.backtest_service import BacktestService
 from src.services.market_data_service import MarketDataService
-from src.strategies import create_strategy
+from src.strategies import create_strategy, get_available_strategies
 from src.gui.backtest_chart import BacktestChartWidget
 from src.gui.backtest_results_panel import BacktestResultsPanel
+from src.gui.strategy_config_widget import StrategyConfigWidget
+from src.gui.strategy_selector import StrategySelectorBar
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,8 @@ class BacktestWindow(QtWidgets.QWidget):
         self.backtest_service = BacktestService(market_data)
         self._last_result = None
         self._last_df = None
+        self._current_strategy_name: str = ""
+        self._strategy_config_widget: Optional[StrategyConfigWidget] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -34,11 +38,19 @@ class BacktestWindow(QtWidgets.QWidget):
         self.setWindowTitle("Strategy Backtester")
         self.setMinimumSize(1200, 800)
 
-        main_layout = QtWidgets.QHBoxLayout(self)
+        main_layout = QtWidgets.QVBoxLayout(self)
+
+        # Strategy selector bar at top
+        self.strategy_selector = StrategySelectorBar()
+        self.strategy_selector.strategySelected.connect(self._on_strategy_selected)
+        main_layout.addWidget(self.strategy_selector)
+
+        # Content area
+        content_layout = QtWidgets.QHBoxLayout()
 
         # Left side: Charts (2/3 width)
         self.chart_widget = BacktestChartWidget()
-        main_layout.addWidget(self.chart_widget, stretch=2)
+        content_layout.addWidget(self.chart_widget, stretch=2)
 
         # Right side: Controls and results (1/3 width)
         right_panel = QtWidgets.QWidget()
@@ -83,32 +95,9 @@ class BacktestWindow(QtWidgets.QWidget):
         params_group.setLayout(params_layout)
         right_layout.addWidget(params_group)
 
-        # RSI Parameters (hardcoded for Phase 2)
-        rsi_group = QtWidgets.QGroupBox("RSI Parameters")
-        rsi_layout = QtWidgets.QFormLayout()
-
-        self.spin_rsi_period = QtWidgets.QSpinBox()
-        self.spin_rsi_period.setRange(2, 100)
-        self.spin_rsi_period.setValue(14)
-
-        self.spin_oversold = QtWidgets.QSpinBox()
-        self.spin_oversold.setRange(0, 50)
-        self.spin_oversold.setValue(30)
-
-        self.spin_overbought = QtWidgets.QSpinBox()
-        self.spin_overbought.setRange(50, 100)
-        self.spin_overbought.setValue(70)
-
-        self.combo_middle = QtWidgets.QComboBox()
-        self.combo_middle.addItems(["hold", "flat"])
-
-        rsi_layout.addRow("Period:", self.spin_rsi_period)
-        rsi_layout.addRow("Oversold:", self.spin_oversold)
-        rsi_layout.addRow("Overbought:", self.spin_overbought)
-        rsi_layout.addRow("Middle Zone:", self.combo_middle)
-
-        rsi_group.setLayout(rsi_layout)
-        right_layout.addWidget(rsi_group)
+        # Strategy config placeholder
+        self._strategy_config_container = QtWidgets.QVBoxLayout()
+        right_layout.addLayout(self._strategy_config_container)
 
         # Run button
         self.btn_run = QtWidgets.QPushButton("Run Backtest")
@@ -139,7 +128,32 @@ class BacktestWindow(QtWidgets.QWidget):
         self.results_panel = BacktestResultsPanel()
         right_layout.addWidget(self.results_panel)
 
-        main_layout.addWidget(right_panel, stretch=1)
+        content_layout.addWidget(right_panel, stretch=1)
+        main_layout.addLayout(content_layout)
+
+        # Initialize with first strategy
+        strategies = get_available_strategies()
+        if strategies:
+            self._on_strategy_selected(strategies[0])
+
+    def _on_strategy_selected(self, strategy_name: str) -> None:
+        """Handle strategy selection change."""
+        self._current_strategy_name = strategy_name
+
+        # Remove old config widget
+        if self._strategy_config_widget is not None:
+            self._strategy_config_widget.deleteLater()
+            self._strategy_config_widget = None
+
+        # Create new config widget for selected strategy
+        strategy = create_strategy(strategy_name)
+        self._strategy_config_widget = StrategyConfigWidget(strategy)
+        self._strategy_config_container.addWidget(self._strategy_config_widget)
+
+        # Clear previous results
+        self.chart_widget.clear()
+        self.results_panel.clear()
+        self._set_status(f"Selected strategy: {strategy.display_name}")
 
     def _run_backtest(self) -> None:
         """Execute backtest with current parameters."""
@@ -148,48 +162,56 @@ class BacktestWindow(QtWidgets.QWidget):
             self._set_status("Please enter a ticker symbol.", error=True)
             return
 
-        self._set_status(f"Running backtest for {ticker}...")
+        if not self._current_strategy_name:
+            self._set_status("Please select a strategy.", error=True)
+            return
+
+        self._set_status(f"Running {self._current_strategy_name} backtest for {ticker}...")
         self.btn_run.setEnabled(False)
         QtWidgets.QApplication.processEvents()
 
         try:
-            # Gather parameters
-            strategy_params = {
-                "period": self.spin_rsi_period.value(),
-                "oversold": self.spin_oversold.value(),
-                "overbought": self.spin_overbought.value(),
-                "middle_behavior": self.combo_middle.currentText(),
-            }
+            # Gather strategy parameters from config widget
+            strategy_params = {}
+            if self._strategy_config_widget:
+                strategy_params = self._strategy_config_widget.get_parameters()
 
             # Run backtest
             result = self.backtest_service.run_backtest(
                 ticker=ticker,
-                strategy_name="RSI",
+                strategy_name=self._current_strategy_name,
                 days=self.spin_days.value(),
                 starting_capital=self.spin_capital.value(),
                 commission=self.spin_commission.value(),
-                slippage=self.spin_slippage.value() / 100,  # Convert percentage
+                slippage=self.spin_slippage.value() / 100,
                 strategy_params=strategy_params,
             )
 
             # Store for export
             self._last_result = result
 
-            # Get price and indicator data for plotting
-            strategy = create_strategy("RSI", **strategy_params)
+            # Get data for plotting
+            strategy = create_strategy(self._current_strategy_name, **strategy_params)
             df = self._fetch_data_for_plotting(ticker, self.spin_days.value())
             df = strategy.run(df)
             self._last_df = df
 
-            # Update charts
+            # Get chart config from strategy
             chart_config = strategy.get_chart_config()
+
+            # Determine indicator column (first line in chart config)
+            indicator_col = None
+            if chart_config.lines:
+                indicator_col = chart_config.lines[0].get("column")
+
+            # Update charts
             self.chart_widget.plot_results(
                 result=result,
                 price_data=df["Close"].values,
-                indicator_data=df["RSI"].values if "RSI" in df.columns else None,
-                indicator_name="RSI",
+                indicator_data=df[indicator_col].values if indicator_col and indicator_col in df.columns else None,
+                indicator_name=self._current_strategy_name,
                 indicator_range=chart_config.y_range,
-                hlines=[{"y": hl["y"], "color": hl["color"]} for hl in chart_config.hlines],
+                hlines=[{"y": hl["y"], "color": hl["color"]} for hl in chart_config.hlines] if chart_config.hlines else None,
             )
 
             # Update results panel
