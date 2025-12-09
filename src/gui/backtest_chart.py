@@ -100,6 +100,10 @@ class BacktestChartWidget(QtWidgets.QWidget):
             name="Close",
         )
 
+        # Overlay indicators on price chart (if not subplot)
+        if chart_config is not None and df is not None and not chart_config.subplot:
+            self._plot_overlay_indicators(df, chart_config, n)
+
         # Equity vs Benchmark
         self.equity_plot.plot(
             x, result.equity_curve.values,
@@ -120,15 +124,34 @@ class BacktestChartWidget(QtWidgets.QWidget):
             brush=pg.mkBrush("#ef535050"),
         )
 
-        # Indicator subplot
-        if chart_config is not None and df is not None:
+        # Indicator subplot (only for strategies that use subplots)
+        if chart_config is not None and df is not None and chart_config.subplot:
             self._plot_indicator_from_config(df, chart_config, indicator_name, n)
         elif indicator_data is not None:
             # Legacy path
             self._plot_indicator_legacy(indicator_data, indicator_name, indicator_range, hlines, n)
+        else:
+            # No subplot needed (overlay indicators or no indicator)
+            self.indicator_plot.setVisible(False)
 
         # Mark trades on price chart
         self._plot_trades(result, price_data[-n:], x)
+
+    def _plot_overlay_indicators(self, df: Any, config: ChartConfig, n: int) -> None:
+        """Plot indicator lines overlaid on price chart."""
+        x = np.arange(n)
+
+        for line in config.lines:
+            col = line.get("column")
+            if col and col in df.columns:
+                data = df[col].values[-n:]
+                color = line.get("color", "#ffd54f")
+                width = line.get("width", 1)
+                self.price_plot.plot(
+                    x, data,
+                    pen=pg.mkPen(color, width=width),
+                    name=line.get("label", col),
+                )
 
     def _plot_indicator_from_config(
         self,

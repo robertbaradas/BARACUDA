@@ -10,12 +10,18 @@ from src.strategies.base_strategy import (
 )
 from src.strategies.rsi_strategy import RSIStrategy
 from src.strategies.macd_strategy import MACDStrategy
+from src.strategies.bollinger_strategy import BollingerBandsStrategy
+from src.strategies.mfi_strategy import MFIStrategy
+from src.strategies.ma_crossover_strategy import MACrossoverStrategy
 
 
 # Registry mapping strategy names to classes
 STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
     "RSI": RSIStrategy,
     "MACD": MACDStrategy,
+    "BB": BollingerBandsStrategy,
+    "MFI": MFIStrategy,
+    "MA_Cross": MACrossoverStrategy,
 }
 
 
@@ -28,7 +34,7 @@ def create_strategy(name: str, **params) -> BaseStrategy:
     """Factory function to instantiate a strategy by name.
 
     Args:
-        name: Strategy identifier (e.g., 'RSI', 'MACD')
+        name: Strategy identifier (e.g., 'RSI', 'MACD', 'BB', 'MFI', 'MA_Cross')
         **params: Parameter overrides
 
     Returns:
@@ -49,6 +55,9 @@ __all__ = [
     "StrategyParameter",
     "RSIStrategy",
     "MACDStrategy",
+    "BollingerBandsStrategy",
+    "MFIStrategy",
+    "MACrossoverStrategy",
     "STRATEGY_REGISTRY",
     "get_available_strategies",
     "create_strategy",
