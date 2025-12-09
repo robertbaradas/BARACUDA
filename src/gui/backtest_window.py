@@ -6,6 +6,7 @@ from typing import Optional
 from PyQt5 import QtCore, QtWidgets
 
 from src.services.backtest_service import BacktestService
+from src.services.export_service import ExportService
 from src.services.market_data_service import MarketDataService
 from src.strategies import create_strategy, get_available_strategies
 from src.strategies.ensemble_strategy import VotingMode
@@ -29,6 +30,7 @@ class BacktestWindow(QtWidgets.QWidget):
         super().__init__(parent)
         self.market_data = market_data
         self.backtest_service = BacktestService(market_data)
+        self.export_service = ExportService()
         self._last_result = None
         self._last_df = None
         self._current_strategy_name: str = ""
@@ -125,6 +127,26 @@ class BacktestWindow(QtWidgets.QWidget):
         """)
         self.btn_run.clicked.connect(self._run_backtest)
         right_layout.addWidget(self.btn_run)
+
+        # Export buttons
+        export_layout = QtWidgets.QHBoxLayout()
+
+        self.btn_export_chart = QtWidgets.QPushButton("Export Chart")
+        self.btn_export_chart.setEnabled(False)
+        self.btn_export_chart.clicked.connect(self._export_chart)
+        export_layout.addWidget(self.btn_export_chart)
+
+        self.btn_export_summary = QtWidgets.QPushButton("Export Summary")
+        self.btn_export_summary.setEnabled(False)
+        self.btn_export_summary.clicked.connect(self._export_summary)
+        export_layout.addWidget(self.btn_export_summary)
+
+        self.btn_export_all = QtWidgets.QPushButton("Export All")
+        self.btn_export_all.setEnabled(False)
+        self.btn_export_all.clicked.connect(self._export_all)
+        export_layout.addWidget(self.btn_export_all)
+
+        right_layout.addLayout(export_layout)
 
         # Status label
         self.lbl_status = QtWidgets.QLabel("")
@@ -245,6 +267,9 @@ class BacktestWindow(QtWidgets.QWidget):
         # Update results panel
         self.results_panel.update_results(result)
 
+        # Enable export buttons
+        self._enable_export_buttons(True)
+
         self._set_status(
             f"Backtest complete: {result.total_return:+.2f}% return, "
             f"{result.num_trades} trades",
@@ -300,6 +325,9 @@ class BacktestWindow(QtWidgets.QWidget):
         # Update results panel
         self.results_panel.update_results(result)
 
+        # Enable export buttons
+        self._enable_export_buttons(True)
+
         self._set_status(
             f"Ensemble backtest complete: {result.total_return:+.2f}% return, "
             f"{result.num_trades} trades",
@@ -344,3 +372,74 @@ class BacktestWindow(QtWidgets.QWidget):
         color = "#ef5350" if error else "#66bb6a"
         self.lbl_status.setStyleSheet(f"color: {color};")
         self.lbl_status.setText(message)
+
+    def _enable_export_buttons(self, enabled: bool) -> None:
+        """Enable or disable export buttons."""
+        self.btn_export_chart.setEnabled(enabled)
+        self.btn_export_summary.setEnabled(enabled)
+        self.btn_export_all.setEnabled(enabled)
+
+    def _export_chart(self) -> None:
+        """Export chart as PNG."""
+        if self._last_result is None:
+            self._set_status("No backtest results to export.", error=True)
+            return
+
+        try:
+            filepath = self.export_service.export_chart_png(
+                self.chart_widget,
+                self._last_result,
+            )
+            self._set_status(f"Chart exported to {filepath}")
+            self._open_file_location(filepath)
+        except Exception as exc:
+            logger.exception("Chart export failed")
+            self._set_status(f"Export failed: {exc}", error=True)
+
+    def _export_summary(self) -> None:
+        """Export summary as text file."""
+        if self._last_result is None:
+            self._set_status("No backtest results to export.", error=True)
+            return
+
+        try:
+            filepath = self.export_service.export_summary(self._last_result)
+            self._set_status(f"Summary exported to {filepath}")
+            self._open_file_location(filepath)
+        except Exception as exc:
+            logger.exception("Summary export failed")
+            self._set_status(f"Export failed: {exc}", error=True)
+
+    def _export_all(self) -> None:
+        """Export both chart and summary."""
+        if self._last_result is None:
+            self._set_status("No backtest results to export.", error=True)
+            return
+
+        try:
+            chart_path, summary_path = self.export_service.export_all(
+                self.chart_widget,
+                self._last_result,
+            )
+            self._set_status(f"Exported to {self.export_service.output_dir}")
+            self._open_file_location(chart_path.parent)
+        except Exception as exc:
+            logger.exception("Export failed")
+            self._set_status(f"Export failed: {exc}", error=True)
+
+    def _open_file_location(self, path) -> None:
+        """Open file location in system file browser."""
+        import subprocess
+        import platform
+        from pathlib import Path
+
+        try:
+            path = str(path)
+            if platform.system() == "Windows":
+                subprocess.run(["explorer", "/select,", path], check=False)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", "-R", path], check=False)
+            else:  # Linux
+                subprocess.run(["xdg-open", str(Path(path).parent)], check=False)
+        except Exception:
+            pass  # Silently fail if can't open file browser
