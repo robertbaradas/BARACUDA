@@ -31,6 +31,7 @@ from src.utils.formatting import _fmt_price, _ts_to_dt_utc
 from src.gui.ws_thread import WsThread
 from src.gui.info_tab import InfoTab
 from src.gui.chart_tab import ChartTab
+from src.gui.backtest_window import BacktestWindow
 
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chart_timer.timeout.connect(self._on_chart_refresh_timer)
         self.broker: Optional[Broker] = None
         self.tradeTab: Optional[TradeTab] = None
+        self._backtest_window: Optional[BacktestWindow] = None
 
         self._build_ui()
         self._wire_signals()
@@ -127,6 +129,13 @@ class MainWindow(QtWidgets.QMainWindow):
         v.addLayout(controls)
         v.addLayout(status_layout)
         v.addWidget(self.tabs)
+
+        # Menu bar
+        menubar = self.menuBar()
+        tools_menu = menubar.addMenu("Tools")
+        backtest_action = tools_menu.addAction("Strategy Backtester")
+        backtest_action.triggered.connect(self._open_backtest_window)
+
         self.setCentralWidget(central)
 
         self.btn_load.clicked.connect(self._on_load_clicked)
@@ -153,6 +162,14 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
         self.tab_chart.requestTimeframe.connect(self._on_timeframe_selected)
+
+    def _open_backtest_window(self) -> None:
+        """Open the strategy backtester window."""
+        if self._backtest_window is None:
+            self._backtest_window = BacktestWindow(self.market_data)
+        self._backtest_window.show()
+        self._backtest_window.raise_()
+        self._backtest_window.activateWindow()
 
     def _setup_trade_components(self) -> None:
         try:
