@@ -9,11 +9,13 @@ from src.strategies.base_strategy import (
     StrategyParameter,
 )
 from src.strategies.rsi_strategy import RSIStrategy
+from src.strategies.macd_strategy import MACDStrategy
 
 
 # Registry mapping strategy names to classes
 STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
     "RSI": RSIStrategy,
+    "MACD": MACDStrategy,
 }
 
 
@@ -26,7 +28,7 @@ def create_strategy(name: str, **params) -> BaseStrategy:
     """Factory function to instantiate a strategy by name.
 
     Args:
-        name: Strategy identifier (e.g., 'RSI')
+        name: Strategy identifier (e.g., 'RSI', 'MACD')
         **params: Parameter overrides
 
     Returns:
@@ -46,6 +48,7 @@ __all__ = [
     "Position",
     "StrategyParameter",
     "RSIStrategy",
+    "MACDStrategy",
     "STRATEGY_REGISTRY",
     "get_available_strategies",
     "create_strategy",

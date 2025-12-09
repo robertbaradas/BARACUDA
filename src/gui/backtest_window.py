@@ -199,19 +199,13 @@ class BacktestWindow(QtWidgets.QWidget):
             # Get chart config from strategy
             chart_config = strategy.get_chart_config()
 
-            # Determine indicator column (first line in chart config)
-            indicator_col = None
-            if chart_config.lines:
-                indicator_col = chart_config.lines[0].get("column")
-
             # Update charts
             self.chart_widget.plot_results(
                 result=result,
                 price_data=df["Close"].values,
-                indicator_data=df[indicator_col].values if indicator_col and indicator_col in df.columns else None,
+                df=df,
+                chart_config=chart_config,
                 indicator_name=self._current_strategy_name,
-                indicator_range=chart_config.y_range,
-                hlines=[{"y": hl["y"], "color": hl["color"]} for hl in chart_config.hlines] if chart_config.hlines else None,
             )
 
             # Update results panel
