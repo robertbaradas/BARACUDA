@@ -8,8 +8,10 @@ from PyQt5 import QtCore, QtWidgets
 from src.services.backtest_service import BacktestService
 from src.services.market_data_service import MarketDataService
 from src.strategies import create_strategy, get_available_strategies
+from src.strategies.ensemble_strategy import VotingMode
 from src.gui.backtest_chart import BacktestChartWidget
 from src.gui.backtest_results_panel import BacktestResultsPanel
+from src.gui.ensemble_panel import EnsemblePanel
 from src.gui.strategy_config_widget import StrategyConfigWidget
 from src.gui.strategy_selector import StrategySelectorBar
 
@@ -99,6 +101,11 @@ class BacktestWindow(QtWidgets.QWidget):
         self._strategy_config_container = QtWidgets.QVBoxLayout()
         right_layout.addLayout(self._strategy_config_container)
 
+        # Ensemble panel
+        self.ensemble_panel = EnsemblePanel()
+        self.ensemble_panel.ensembleChanged.connect(self._on_ensemble_changed)
+        right_layout.addWidget(self.ensemble_panel)
+
         # Run button
         self.btn_run = QtWidgets.QPushButton("Run Backtest")
         self.btn_run.setStyleSheet("""
@@ -155,6 +162,17 @@ class BacktestWindow(QtWidgets.QWidget):
         self.results_panel.clear()
         self._set_status(f"Selected strategy: {strategy.display_name}")
 
+    def _on_ensemble_changed(self) -> None:
+        """Handle ensemble configuration change."""
+        # Clear results when ensemble config changes
+        self.chart_widget.clear()
+        self.results_panel.clear()
+
+        if self.ensemble_panel.is_ensemble_enabled():
+            self._set_status("Ensemble mode enabled")
+        else:
+            self._set_status(f"Single strategy: {self._current_strategy_name}")
+
     def _run_backtest(self) -> None:
         """Execute backtest with current parameters."""
         ticker = self.txt_ticker.text().strip().upper()
@@ -162,60 +180,14 @@ class BacktestWindow(QtWidgets.QWidget):
             self._set_status("Please enter a ticker symbol.", error=True)
             return
 
-        if not self._current_strategy_name:
-            self._set_status("Please select a strategy.", error=True)
-            return
-
-        self._set_status(f"Running {self._current_strategy_name} backtest for {ticker}...")
         self.btn_run.setEnabled(False)
         QtWidgets.QApplication.processEvents()
 
         try:
-            # Gather strategy parameters from config widget
-            strategy_params = {}
-            if self._strategy_config_widget:
-                strategy_params = self._strategy_config_widget.get_parameters()
-
-            # Run backtest
-            result = self.backtest_service.run_backtest(
-                ticker=ticker,
-                strategy_name=self._current_strategy_name,
-                days=self.spin_days.value(),
-                starting_capital=self.spin_capital.value(),
-                commission=self.spin_commission.value(),
-                slippage=self.spin_slippage.value() / 100,
-                strategy_params=strategy_params,
-            )
-
-            # Store for export
-            self._last_result = result
-
-            # Get data for plotting
-            strategy = create_strategy(self._current_strategy_name, **strategy_params)
-            df = self._fetch_data_for_plotting(ticker, self.spin_days.value())
-            df = strategy.run(df)
-            self._last_df = df
-
-            # Get chart config from strategy
-            chart_config = strategy.get_chart_config()
-
-            # Update charts
-            self.chart_widget.plot_results(
-                result=result,
-                price_data=df["Close"].values,
-                df=df,
-                chart_config=chart_config,
-                indicator_name=self._current_strategy_name,
-            )
-
-            # Update results panel
-            self.results_panel.update_results(result)
-
-            self._set_status(
-                f"Backtest complete: {result.total_return:+.2f}% return, "
-                f"{result.num_trades} trades",
-                error=False,
-            )
+            if self.ensemble_panel.is_ensemble_enabled():
+                self._run_ensemble_backtest(ticker)
+            else:
+                self._run_single_backtest(ticker)
 
         except Exception as exc:
             logger.exception("Backtest failed")
@@ -223,6 +195,116 @@ class BacktestWindow(QtWidgets.QWidget):
 
         finally:
             self.btn_run.setEnabled(True)
+
+    def _run_single_backtest(self, ticker: str) -> None:
+        """Run backtest for a single strategy."""
+        if not self._current_strategy_name:
+            self._set_status("Please select a strategy.", error=True)
+            return
+
+        self._set_status(f"Running {self._current_strategy_name} backtest for {ticker}...")
+        QtWidgets.QApplication.processEvents()
+
+        # Gather strategy parameters from config widget
+        strategy_params = {}
+        if self._strategy_config_widget:
+            strategy_params = self._strategy_config_widget.get_parameters()
+
+        # Run backtest
+        result = self.backtest_service.run_backtest(
+            ticker=ticker,
+            strategy_name=self._current_strategy_name,
+            days=self.spin_days.value(),
+            starting_capital=self.spin_capital.value(),
+            commission=self.spin_commission.value(),
+            slippage=self.spin_slippage.value() / 100,
+            strategy_params=strategy_params,
+        )
+
+        # Store for export
+        self._last_result = result
+
+        # Get data for plotting
+        strategy = create_strategy(self._current_strategy_name, **strategy_params)
+        df = self._fetch_data_for_plotting(ticker, self.spin_days.value())
+        df = strategy.run(df)
+        self._last_df = df
+
+        # Get chart config from strategy
+        chart_config = strategy.get_chart_config()
+
+        # Update charts
+        self.chart_widget.plot_results(
+            result=result,
+            price_data=df["Close"].values,
+            df=df,
+            chart_config=chart_config,
+            indicator_name=self._current_strategy_name,
+        )
+
+        # Update results panel
+        self.results_panel.update_results(result)
+
+        self._set_status(
+            f"Backtest complete: {result.total_return:+.2f}% return, "
+            f"{result.num_trades} trades",
+            error=False,
+        )
+
+    def _run_ensemble_backtest(self, ticker: str) -> None:
+        """Run backtest for ensemble of strategies."""
+        selected = self.ensemble_panel.get_selected_strategies()
+        if len(selected) < 2:
+            self._set_status("Ensemble requires at least 2 strategies.", error=True)
+            return
+
+        weights = self.ensemble_panel.get_weights()
+        voting_mode = self.ensemble_panel.get_voting_mode()
+        threshold = self.ensemble_panel.get_threshold()
+
+        self._set_status(f"Running ensemble backtest ({', '.join(selected)}) for {ticker}...")
+        QtWidgets.QApplication.processEvents()
+
+        # Build strategy configs (using default params for ensemble)
+        strategy_configs = [
+            {"name": name, "params": {}, "weight": weights.get(name, 1.0)}
+            for name in selected
+        ]
+
+        # Run ensemble backtest
+        result = self.backtest_service.run_ensemble_backtest(
+            ticker=ticker,
+            strategy_configs=strategy_configs,
+            voting_mode=voting_mode,
+            threshold=threshold,
+            days=self.spin_days.value(),
+            starting_capital=self.spin_capital.value(),
+            commission=self.spin_commission.value(),
+            slippage=self.spin_slippage.value() / 100,
+        )
+
+        # Store for export
+        self._last_result = result
+        self._last_df = None  # Ensemble doesn't have single indicator to show
+
+        # Update charts (no indicator subplot for ensemble)
+        df = self._fetch_data_for_plotting(ticker, self.spin_days.value())
+        self.chart_widget.plot_results(
+            result=result,
+            price_data=df["Close"].values,
+            df=None,
+            chart_config=None,
+            indicator_name="Ensemble",
+        )
+
+        # Update results panel
+        self.results_panel.update_results(result)
+
+        self._set_status(
+            f"Ensemble backtest complete: {result.total_return:+.2f}% return, "
+            f"{result.num_trades} trades",
+            error=False,
+        )
 
     def _fetch_data_for_plotting(self, ticker: str, days: int):
         """Fetch data for chart plotting."""

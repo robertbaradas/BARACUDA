@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
 from src.services.market_data_service import MarketDataService
 from src.strategies import create_strategy, get_available_strategies, BaseStrategy
+from src.strategies.ensemble_strategy import EnsembleStrategy, VotingMode
 from src.backtesting.engine import BacktestEngine, BacktestResult
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,93 @@ class BacktestService:
             ticker=ticker,
             strategy_name=strategy_name,
             parameters=strategy_params,
+        )
+
+        return result
+
+    def run_ensemble_backtest(
+        self,
+        ticker: str,
+        strategy_configs: List[Dict],
+        voting_mode: VotingMode = VotingMode.MAJORITY,
+        threshold: float = 0.5,
+        days: int = 365,
+        starting_capital: float = 10000.0,
+        commission: float = 0.0,
+        slippage: float = 0.0,
+        end_date: Optional[datetime] = None,
+    ) -> BacktestResult:
+        """Run an ensemble backtest combining multiple strategies.
+
+        Args:
+            ticker: Stock symbol
+            strategy_configs: List of dicts with 'name', 'params', and 'weight' keys
+            voting_mode: How to combine signals
+            threshold: Voting threshold
+            days: Number of days to test
+            starting_capital: Starting cash
+            commission: Commission per trade
+            slippage: Slippage fraction
+            end_date: End date for backtest
+
+        Returns:
+            BacktestResult
+        """
+        # Calculate date range
+        if end_date is None:
+            end_date = datetime.now()
+        start_date = end_date - timedelta(days=int(days * 1.5))
+
+        # Fetch historical data
+        logger.info(f"Fetching {ticker} data for ensemble backtest")
+        df = self._fetch_historical_data(ticker, start_date, end_date)
+
+        if df.empty:
+            raise ValueError(f"No data returned for {ticker}")
+
+        # Create strategy instances
+        strategies = []
+        weights = []
+        for config in strategy_configs:
+            strategy = create_strategy(config["name"], **config.get("params", {}))
+            strategies.append(strategy)
+            weights.append(config.get("weight", 1.0))
+
+        # Create and run ensemble
+        ensemble = EnsembleStrategy(
+            strategies=strategies,
+            weights=weights,
+            voting_mode=voting_mode,
+            threshold=threshold,
+        )
+        df = ensemble.run(df)
+
+        # Trim to requested day count
+        if len(df) > days:
+            df = df.iloc[-days:]
+
+        # Run backtest engine
+        engine = BacktestEngine(
+            starting_capital=starting_capital,
+            commission=commission,
+            slippage=slippage,
+        )
+
+        # Build parameter summary
+        params_summary = {
+            "voting_mode": voting_mode.value,
+            "threshold": threshold,
+            "strategies": [
+                {"name": c["name"], "weight": c.get("weight", 1.0), "params": c.get("params", {})}
+                for c in strategy_configs
+            ],
+        }
+
+        result = engine.run(
+            df,
+            ticker=ticker,
+            strategy_name=ensemble.name,
+            parameters=params_summary,
         )
 
         return result
