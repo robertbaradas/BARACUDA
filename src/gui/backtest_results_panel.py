@@ -18,6 +18,31 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         """Initialize the results panel layout."""
         layout = QtWidgets.QVBoxLayout(self)
 
+        # Open position warning (initially hidden)
+        self.open_position_warning = QtWidgets.QFrame()
+        self.open_position_warning.setStyleSheet("""
+            QFrame {
+                background-color: #4a3000;
+                border: 1px solid #ffa726;
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        warning_layout = QtWidgets.QVBoxLayout(self.open_position_warning)
+        warning_layout.setContentsMargins(8, 8, 8, 8)
+
+        warning_title = QtWidgets.QLabel("Open Position at End")
+        warning_title.setStyleSheet("color: #ffa726; font-weight: bold;")
+        warning_layout.addWidget(warning_title)
+
+        self.lbl_open_position_details = QtWidgets.QLabel("")
+        self.lbl_open_position_details.setStyleSheet("color: #ffcc80;")
+        self.lbl_open_position_details.setWordWrap(True)
+        warning_layout.addWidget(self.lbl_open_position_details)
+
+        self.open_position_warning.setVisible(False)
+        layout.addWidget(self.open_position_warning)
+
         # Metrics group
         metrics_group = QtWidgets.QGroupBox("Performance Metrics")
         metrics_layout = QtWidgets.QFormLayout()
@@ -30,6 +55,7 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         self.lbl_volatility = QtWidgets.QLabel("—")
         self.lbl_num_trades = QtWidgets.QLabel("—")
         self.lbl_win_rate = QtWidgets.QLabel("—")
+        self.lbl_adjusted_win_rate = QtWidgets.QLabel("—")
         self.lbl_profit_factor = QtWidgets.QLabel("—")
 
         metrics_layout.addRow("Strategy Return:", self.lbl_strategy_return)
@@ -40,6 +66,7 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         metrics_layout.addRow("Volatility:", self.lbl_volatility)
         metrics_layout.addRow("# Trades:", self.lbl_num_trades)
         metrics_layout.addRow("Win Rate:", self.lbl_win_rate)
+        metrics_layout.addRow("Adj. Win Rate:", self.lbl_adjusted_win_rate)
         metrics_layout.addRow("Profit Factor:", self.lbl_profit_factor)
 
         metrics_group.setLayout(metrics_layout)
@@ -65,6 +92,8 @@ class BacktestResultsPanel(QtWidgets.QWidget):
 
     def clear(self) -> None:
         """Clear all displayed results."""
+        self.open_position_warning.setVisible(False)
+        self.lbl_open_position_details.setText("")
         self.lbl_strategy_return.setText("—")
         self.lbl_benchmark_return.setText("—")
         self.lbl_excess_return.setText("—")
@@ -73,11 +102,27 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         self.lbl_volatility.setText("—")
         self.lbl_num_trades.setText("—")
         self.lbl_win_rate.setText("—")
+        self.lbl_adjusted_win_rate.setText("—")
         self.lbl_profit_factor.setText("—")
         self.trade_table.setRowCount(0)
 
     def update_results(self, result: BacktestResult) -> None:
         """Update panel with backtest results."""
+        # Handle open position warning
+        if result.has_open_position:
+            pos = result.open_position
+            pnl_color = "#66bb6a" if pos.is_winning else "#ef5350"
+            pnl_sign = "+" if pos.unrealized_pnl >= 0 else ""
+            details = (
+                f"{pos.direction} {pos.shares:.2f} shares @ ${pos.entry_price:.2f}\n"
+                f"Current: ${pos.current_price:.2f}\n"
+                f"Unrealized P&L: <span style='color:{pnl_color}'>{pnl_sign}${pos.unrealized_pnl:,.2f} ({pnl_sign}{pos.unrealized_pnl_pct:.2f}%)</span>"
+            )
+            self.lbl_open_position_details.setText(details)
+            self.open_position_warning.setVisible(True)
+        else:
+            self.open_position_warning.setVisible(False)
+
         # Format and color returns
         self._set_return_label(self.lbl_strategy_return, result.total_return)
         self._set_return_label(self.lbl_benchmark_return, result.benchmark_return)
@@ -93,14 +138,32 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         self.lbl_volatility.setText(f"{result.volatility:.2f}%")
         self.lbl_num_trades.setText(str(result.num_trades))
 
-        self.lbl_win_rate.setText(f"{result.win_rate:.1f}%")
+        # Win rate - add asterisk if there's an open position
+        win_rate_text = f"{result.win_rate:.1f}%"
+        if result.has_open_position:
+            win_rate_text += " *"
+        self.lbl_win_rate.setText(win_rate_text)
         self._color_label(self.lbl_win_rate, result.win_rate, threshold=50)
 
+        # Adjusted win rate (only shown if there's an open position)
+        if result.adjusted_win_rate is not None:
+            self.lbl_adjusted_win_rate.setText(f"{result.adjusted_win_rate:.1f}%")
+            self._color_label(self.lbl_adjusted_win_rate, result.adjusted_win_rate, threshold=50)
+        else:
+            self.lbl_adjusted_win_rate.setText("—")
+            self.lbl_adjusted_win_rate.setStyleSheet("color: #d4d4d4;")
+
         if result.profit_factor == float('inf'):
-            self.lbl_profit_factor.setText("∞")
+            pf_text = "∞"
+            if result.has_open_position:
+                pf_text += " *"
+            self.lbl_profit_factor.setText(pf_text)
             self.lbl_profit_factor.setStyleSheet("color: #66bb6a;")
         else:
-            self.lbl_profit_factor.setText(f"{result.profit_factor:.2f}")
+            pf_text = f"{result.profit_factor:.2f}"
+            if result.has_open_position:
+                pf_text += " *"
+            self.lbl_profit_factor.setText(pf_text)
             self._color_label(self.lbl_profit_factor, result.profit_factor, threshold=1)
 
         # Populate trade table

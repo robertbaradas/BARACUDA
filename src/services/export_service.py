@@ -93,12 +93,38 @@ class ExportService:
             f"Volatility:       {result.volatility:.2f}%",
             "",
             f"Number of Trades: {result.num_trades}",
-            f"Win Rate:         {result.win_rate:.1f}%",
+            f"Win Rate:         {result.win_rate:.1f}%" + (" *" if result.has_open_position else ""),
+        ])
+
+        # Add adjusted win rate if there's an open position
+        if result.adjusted_win_rate is not None:
+            lines.append(f"Adj. Win Rate:    {result.adjusted_win_rate:.1f}% (incl. open position)")
+
+        lines.extend([
             f"Avg Win:          ${result.avg_win:,.2f}" if result.avg_win else "Avg Win:          N/A",
             f"Avg Loss:         ${result.avg_loss:,.2f}" if result.avg_loss else "Avg Loss:         N/A",
-            f"Profit Factor:    {result.profit_factor:.2f}" if result.profit_factor != float('inf') else "Profit Factor:    Infinite",
+            f"Profit Factor:    {result.profit_factor:.2f}" + (" *" if result.has_open_position else "") if result.profit_factor != float('inf') else "Profit Factor:    Infinite" + (" *" if result.has_open_position else ""),
             "",
         ])
+
+        # Open position warning section
+        if result.has_open_position:
+            pos = result.open_position
+            pnl_sign = "+" if pos.unrealized_pnl >= 0 else ""
+            lines.extend([
+                "-" * 60,
+                "WARNING: OPEN POSITION AT END OF BACKTEST",
+                "-" * 60,
+                f"Direction:        {pos.direction}",
+                f"Shares:           {pos.shares:.2f}",
+                f"Entry Price:      ${pos.entry_price:.2f}",
+                f"Entry Date:       {pos.entry_date.strftime('%Y-%m-%d')}",
+                f"Current Price:    ${pos.current_price:.2f}",
+                f"Unrealized P&L:   {pnl_sign}${pos.unrealized_pnl:,.2f} ({pnl_sign}{pos.unrealized_pnl_pct:.2f}%)",
+                "",
+                "* Metrics marked with asterisk may be misleading due to open position.",
+                "",
+            ])
 
         # Trade list
         if result.trades:

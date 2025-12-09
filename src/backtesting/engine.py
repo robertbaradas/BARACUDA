@@ -26,6 +26,23 @@ class Trade:
 
 
 @dataclass
+class OpenPosition:
+    """Tracks an open position at backtest end."""
+    direction: str  # "LONG" or "SHORT"
+    shares: float
+    entry_price: float
+    entry_date: datetime
+    current_price: float
+    unrealized_pnl: float
+    unrealized_pnl_pct: float
+
+    @property
+    def is_winning(self) -> bool:
+        """Whether the open position is currently profitable."""
+        return self.unrealized_pnl > 0
+
+
+@dataclass
 class BacktestResult:
     """Complete results from a backtest run."""
     # Curves
@@ -51,6 +68,10 @@ class BacktestResult:
     # Trade list
     trades: List[Trade] = field(default_factory=list)
 
+    # Open position tracking
+    open_position: Optional[OpenPosition] = None
+    adjusted_win_rate: Optional[float] = None  # Win rate if open position were closed
+
     # Metadata
     ticker: str = ""
     start_date: Optional[datetime] = None
@@ -58,6 +79,11 @@ class BacktestResult:
     starting_capital: float = 10000.0
     strategy_name: str = ""
     parameters: dict = field(default_factory=dict)
+
+    @property
+    def has_open_position(self) -> bool:
+        """Whether there is an unclosed position at backtest end."""
+        return self.open_position is not None
 
 
 class BacktestEngine:
@@ -218,8 +244,39 @@ class BacktestEngine:
         benchmark_curve = benchmark_shares * df["Close"]
         benchmark_curve.name = "benchmark"
 
+        # Detect open position at end of backtest
+        open_position = None
+        if shares != 0 and len(trades) > 0:
+            # Find the entry trade for the open position
+            last_entry = None
+            for trade in reversed(trades):
+                if trade.action in ("BUY", "SHORT"):
+                    last_entry = trade
+                    break
+
+            if last_entry is not None:
+                current_price = df["Close"].iloc[-1]
+                direction = "LONG" if shares > 0 else "SHORT"
+
+                if direction == "LONG":
+                    unrealized_pnl = (current_price - last_entry.price) * abs(shares)
+                else:  # SHORT
+                    unrealized_pnl = (last_entry.price - current_price) * abs(shares)
+
+                unrealized_pnl_pct = (unrealized_pnl / (last_entry.price * abs(shares))) * 100
+
+                open_position = OpenPosition(
+                    direction=direction,
+                    shares=abs(shares),
+                    entry_price=last_entry.price,
+                    entry_date=last_entry.date,
+                    current_price=current_price,
+                    unrealized_pnl=unrealized_pnl,
+                    unrealized_pnl_pct=unrealized_pnl_pct,
+                )
+
         # Calculate metrics
-        metrics = self._calculate_metrics(equity_curve, benchmark_curve, trades)
+        metrics = self._calculate_metrics(equity_curve, benchmark_curve, trades, open_position)
 
         return BacktestResult(
             equity_curve=equity_curve,
@@ -237,6 +294,8 @@ class BacktestEngine:
             avg_loss=metrics["avg_loss"],
             profit_factor=metrics["profit_factor"],
             trades=trades,
+            open_position=open_position,
+            adjusted_win_rate=metrics["adjusted_win_rate"],
             ticker=ticker,
             start_date=df.index[0] if len(df) > 0 else None,
             end_date=df.index[-1] if len(df) > 0 else None,
@@ -250,6 +309,7 @@ class BacktestEngine:
         equity_curve: pd.Series,
         benchmark_curve: pd.Series,
         trades: List[Trade],
+        open_position: Optional[OpenPosition] = None,
     ) -> dict:
         """Calculate performance metrics."""
 
@@ -276,9 +336,9 @@ class BacktestEngine:
         max_drawdown = drawdown_curve.min()
 
         # Trade statistics
+        trade_pnls = []
         if len(trades) >= 2:
             # Pair up trades to calculate P&L
-            trade_pnls = []
             for i in range(0, len(trades) - 1, 2):
                 if i + 1 < len(trades):
                     entry = trades[i]
@@ -291,21 +351,26 @@ class BacktestEngine:
                         pnl -= entry.commission + exit_trade.commission
                         trade_pnls.append(pnl)
 
-            wins = [p for p in trade_pnls if p > 0]
-            losses = [p for p in trade_pnls if p < 0]
+        wins = [p for p in trade_pnls if p > 0]
+        losses = [p for p in trade_pnls if p < 0]
 
-            win_rate = len(wins) / len(trade_pnls) * 100 if trade_pnls else 0.0
-            avg_win = np.mean(wins) if wins else 0.0
-            avg_loss = np.mean(losses) if losses else 0.0
+        win_rate = len(wins) / len(trade_pnls) * 100 if trade_pnls else 0.0
+        avg_win = np.mean(wins) if wins else 0.0
+        avg_loss = np.mean(losses) if losses else 0.0
 
-            gross_profit = sum(wins) if wins else 0.0
-            gross_loss = abs(sum(losses)) if losses else 0.0
-            profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
-        else:
-            win_rate = 0.0
-            avg_win = 0.0
-            avg_loss = 0.0
-            profit_factor = 0.0
+        gross_profit = sum(wins) if wins else 0.0
+        gross_loss = abs(sum(losses)) if losses else 0.0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+
+        # Calculate adjusted win rate (including open position as if closed)
+        adjusted_win_rate = None
+        if open_position is not None:
+            # Create a hypothetical trade list including the open position
+            adjusted_pnls = trade_pnls.copy()
+            adjusted_pnls.append(open_position.unrealized_pnl)
+
+            adjusted_wins = [p for p in adjusted_pnls if p > 0]
+            adjusted_win_rate = len(adjusted_wins) / len(adjusted_pnls) * 100 if adjusted_pnls else 0.0
 
         return {
             "total_return": total_return,
@@ -319,4 +384,5 @@ class BacktestEngine:
             "avg_win": avg_win,
             "avg_loss": avg_loss,
             "profit_factor": profit_factor,
+            "adjusted_win_rate": adjusted_win_rate,
         }
