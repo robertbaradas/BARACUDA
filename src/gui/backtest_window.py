@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from PyQt5 import QtCore, QtWidgets
@@ -15,6 +16,7 @@ from src.gui.backtest_results_panel import BacktestResultsPanel
 from src.gui.ensemble_panel import EnsemblePanel
 from src.gui.strategy_config_widget import StrategyConfigWidget
 from src.gui.strategy_selector import StrategySelectorBar
+from src.gui.collapsible_panel import CollapsiblePanel
 
 logger = logging.getLogger(__name__)
 
@@ -43,26 +45,52 @@ class BacktestWindow(QtWidgets.QWidget):
         self.setMinimumSize(1200, 800)
 
         main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.setContentsMargins(4, 4, 4, 4)
 
         # Strategy selector bar at top
         self.strategy_selector = StrategySelectorBar()
         self.strategy_selector.strategySelected.connect(self._on_strategy_selected)
         main_layout.addWidget(self.strategy_selector)
 
-        # Content area
-        content_layout = QtWidgets.QHBoxLayout()
+        # Main horizontal splitter: charts | control panel
+        self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.main_splitter.setHandleWidth(6)
+        self.main_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #3d3d3d;
+            }
+            QSplitter::handle:hover {
+                background-color: #1976d2;
+            }
+        """)
 
-        # Left side: Charts (2/3 width)
+        # Left side: Charts
         self.chart_widget = BacktestChartWidget()
-        content_layout.addWidget(self.chart_widget, stretch=2)
+        self.main_splitter.addWidget(self.chart_widget)
 
-        # Right side: Controls and results (1/3 width)
+        # Right side: Control panel with vertical splitter for resizable sections
         right_panel = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
 
-        # Study parameters
-        params_group = QtWidgets.QGroupBox("Study Parameters")
-        params_layout = QtWidgets.QFormLayout()
+        # Vertical splitter for control panel sections
+        self.control_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.control_splitter.setHandleWidth(4)
+        self.control_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #3d3d3d;
+            }
+            QSplitter::handle:hover {
+                background-color: #1976d2;
+            }
+        """)
+
+        # --- Study Parameters Section ---
+        self.params_panel = CollapsiblePanel("Study Parameters")
+        params_content = QtWidgets.QWidget()
+        params_layout = QtWidgets.QFormLayout(params_content)
+        params_layout.setContentsMargins(8, 8, 8, 8)
 
         self.txt_ticker = QtWidgets.QLineEdit()
         self.txt_ticker.setPlaceholderText("e.g., AAPL")
@@ -96,19 +124,32 @@ class BacktestWindow(QtWidgets.QWidget):
         params_layout.addRow("Commission:", self.spin_commission)
         params_layout.addRow("Slippage:", self.spin_slippage)
 
-        params_group.setLayout(params_layout)
-        right_layout.addWidget(params_group)
+        self.params_panel.set_content(params_content)
+        self.control_splitter.addWidget(self.params_panel)
 
-        # Strategy config placeholder
-        self._strategy_config_container = QtWidgets.QVBoxLayout()
-        right_layout.addLayout(self._strategy_config_container)
+        # --- Strategy Config Section ---
+        self.strategy_panel = CollapsiblePanel("Strategy Parameters")
+        self._strategy_config_container = QtWidgets.QWidget()
+        self._strategy_config_layout = QtWidgets.QVBoxLayout(self._strategy_config_container)
+        self._strategy_config_layout.setContentsMargins(8, 8, 8, 8)
+        self.strategy_panel.set_content(self._strategy_config_container)
+        self.control_splitter.addWidget(self.strategy_panel)
 
-        # Ensemble panel
+        # --- Ensemble Section ---
+        self.ensemble_panel_wrapper = CollapsiblePanel(
+            "Ensemble Configuration", initially_collapsed=True
+        )
         self.ensemble_panel = EnsemblePanel()
         self.ensemble_panel.ensembleChanged.connect(self._on_ensemble_changed)
-        right_layout.addWidget(self.ensemble_panel)
+        self.ensemble_panel_wrapper.set_content(self.ensemble_panel)
+        self.control_splitter.addWidget(self.ensemble_panel_wrapper)
 
-        # Run button
+        # --- Actions Section (Run + Export) ---
+        self.actions_panel = CollapsiblePanel("Actions")
+        actions_content = QtWidgets.QWidget()
+        actions_layout = QtWidgets.QVBoxLayout(actions_content)
+        actions_layout.setContentsMargins(8, 8, 8, 8)
+
         self.btn_run = QtWidgets.QPushButton("Run Backtest")
         self.btn_run.setStyleSheet("""
             QPushButton {
@@ -126,17 +167,16 @@ class BacktestWindow(QtWidgets.QWidget):
             }
         """)
         self.btn_run.clicked.connect(self._run_backtest)
-        right_layout.addWidget(self.btn_run)
+        actions_layout.addWidget(self.btn_run)
 
         # Export buttons
         export_layout = QtWidgets.QHBoxLayout()
-
-        self.btn_export_chart = QtWidgets.QPushButton("Export Chart")
+        self.btn_export_chart = QtWidgets.QPushButton("Chart")
         self.btn_export_chart.setEnabled(False)
         self.btn_export_chart.clicked.connect(self._export_chart)
         export_layout.addWidget(self.btn_export_chart)
 
-        self.btn_export_summary = QtWidgets.QPushButton("Export Summary")
+        self.btn_export_summary = QtWidgets.QPushButton("Summary")
         self.btn_export_summary.setEnabled(False)
         self.btn_export_summary.clicked.connect(self._export_summary)
         export_layout.addWidget(self.btn_export_summary)
@@ -146,19 +186,35 @@ class BacktestWindow(QtWidgets.QWidget):
         self.btn_export_all.clicked.connect(self._export_all)
         export_layout.addWidget(self.btn_export_all)
 
-        right_layout.addLayout(export_layout)
+        actions_layout.addLayout(export_layout)
 
-        # Status label
         self.lbl_status = QtWidgets.QLabel("")
         self.lbl_status.setStyleSheet("color: #888888;")
-        right_layout.addWidget(self.lbl_status)
+        self.lbl_status.setWordWrap(True)
+        actions_layout.addWidget(self.lbl_status)
 
-        # Results panel
+        self.actions_panel.set_content(actions_content)
+        self.control_splitter.addWidget(self.actions_panel)
+
+        # --- Results Section ---
+        self.results_panel_wrapper = CollapsiblePanel("Results")
         self.results_panel = BacktestResultsPanel()
-        right_layout.addWidget(self.results_panel)
+        self.results_panel_wrapper.set_content(self.results_panel)
+        self.control_splitter.addWidget(self.results_panel_wrapper)
 
-        content_layout.addWidget(right_panel, stretch=1)
-        main_layout.addLayout(content_layout)
+        # Add control splitter to right panel
+        right_layout.addWidget(self.control_splitter)
+
+        # Add right panel to main splitter
+        self.main_splitter.addWidget(right_panel)
+
+        # Set initial splitter proportions (charts get ~65%, controls get ~35%)
+        self.main_splitter.setSizes([700, 400])
+
+        # Set initial control panel proportions
+        self.control_splitter.setSizes([100, 120, 80, 80, 300])
+
+        main_layout.addWidget(self.main_splitter)
 
         # Initialize with first strategy
         strategies = get_available_strategies()
@@ -171,13 +227,17 @@ class BacktestWindow(QtWidgets.QWidget):
 
         # Remove old config widget
         if self._strategy_config_widget is not None:
+            self._strategy_config_layout.removeWidget(self._strategy_config_widget)
             self._strategy_config_widget.deleteLater()
             self._strategy_config_widget = None
 
         # Create new config widget for selected strategy
         strategy = create_strategy(strategy_name)
         self._strategy_config_widget = StrategyConfigWidget(strategy)
-        self._strategy_config_container.addWidget(self._strategy_config_widget)
+        self._strategy_config_layout.addWidget(self._strategy_config_widget)
+
+        # Update panel title
+        self.strategy_panel.set_title(f"Strategy: {strategy.display_name}")
 
         # Clear previous results
         self.chart_widget.clear()
@@ -186,7 +246,6 @@ class BacktestWindow(QtWidgets.QWidget):
 
     def _on_ensemble_changed(self) -> None:
         """Handle ensemble configuration change."""
-        # Clear results when ensemble config changes
         self.chart_widget.clear()
         self.results_panel.clear()
 
@@ -227,12 +286,10 @@ class BacktestWindow(QtWidgets.QWidget):
         self._set_status(f"Running {self._current_strategy_name} backtest for {ticker}...")
         QtWidgets.QApplication.processEvents()
 
-        # Gather strategy parameters from config widget
         strategy_params = {}
         if self._strategy_config_widget:
             strategy_params = self._strategy_config_widget.get_parameters()
 
-        # Run backtest
         result = self.backtest_service.run_backtest(
             ticker=ticker,
             strategy_name=self._current_strategy_name,
@@ -243,19 +300,15 @@ class BacktestWindow(QtWidgets.QWidget):
             strategy_params=strategy_params,
         )
 
-        # Store for export
         self._last_result = result
 
-        # Get data for plotting
         strategy = create_strategy(self._current_strategy_name, **strategy_params)
         df = self._fetch_data_for_plotting(ticker, self.spin_days.value())
         df = strategy.run(df)
         self._last_df = df
 
-        # Get chart config from strategy
         chart_config = strategy.get_chart_config()
 
-        # Update charts
         self.chart_widget.plot_results(
             result=result,
             price_data=df["Close"].values,
@@ -264,10 +317,7 @@ class BacktestWindow(QtWidgets.QWidget):
             indicator_name=self._current_strategy_name,
         )
 
-        # Update results panel
         self.results_panel.update_results(result)
-
-        # Enable export buttons
         self._enable_export_buttons(True)
 
         self._set_status(
@@ -290,13 +340,11 @@ class BacktestWindow(QtWidgets.QWidget):
         self._set_status(f"Running ensemble backtest ({', '.join(selected)}) for {ticker}...")
         QtWidgets.QApplication.processEvents()
 
-        # Build strategy configs (using default params for ensemble)
         strategy_configs = [
             {"name": name, "params": {}, "weight": weights.get(name, 1.0)}
             for name in selected
         ]
 
-        # Run ensemble backtest
         result = self.backtest_service.run_ensemble_backtest(
             ticker=ticker,
             strategy_configs=strategy_configs,
@@ -308,11 +356,9 @@ class BacktestWindow(QtWidgets.QWidget):
             slippage=self.spin_slippage.value() / 100,
         )
 
-        # Store for export
         self._last_result = result
-        self._last_df = None  # Ensemble doesn't have single indicator to show
+        self._last_df = None
 
-        # Update charts (no indicator subplot for ensemble)
         df = self._fetch_data_for_plotting(ticker, self.spin_days.value())
         self.chart_widget.plot_results(
             result=result,
@@ -322,10 +368,7 @@ class BacktestWindow(QtWidgets.QWidget):
             indicator_name="Ensemble",
         )
 
-        # Update results panel
         self.results_panel.update_results(result)
-
-        # Enable export buttons
         self._enable_export_buttons(True)
 
         self._set_status(
@@ -431,15 +474,47 @@ class BacktestWindow(QtWidgets.QWidget):
         """Open file location in system file browser."""
         import subprocess
         import platform
-        from pathlib import Path
 
         try:
             path = str(path)
             if platform.system() == "Windows":
                 subprocess.run(["explorer", "/select,", path], check=False)
-            elif platform.system() == "Darwin":  # macOS
+            elif platform.system() == "Darwin":
                 subprocess.run(["open", "-R", path], check=False)
-            else:  # Linux
+            else:
                 subprocess.run(["xdg-open", str(Path(path).parent)], check=False)
         except Exception:
-            pass  # Silently fail if can't open file browser
+            pass
+
+    def save_layout(self) -> dict:
+        """Save current splitter positions for persistence."""
+        return {
+            "main_splitter": self.main_splitter.sizes(),
+            "control_splitter": self.control_splitter.sizes(),
+            "collapsed": {
+                "params": self.params_panel.is_collapsed(),
+                "strategy": self.strategy_panel.is_collapsed(),
+                "ensemble": self.ensemble_panel_wrapper.is_collapsed(),
+                "actions": self.actions_panel.is_collapsed(),
+                "results": self.results_panel_wrapper.is_collapsed(),
+            },
+        }
+
+    def restore_layout(self, layout: dict) -> None:
+        """Restore splitter positions from saved layout."""
+        if "main_splitter" in layout:
+            self.main_splitter.setSizes(layout["main_splitter"])
+        if "control_splitter" in layout:
+            self.control_splitter.setSizes(layout["control_splitter"])
+        if "collapsed" in layout:
+            collapsed = layout["collapsed"]
+            if "params" in collapsed:
+                self.params_panel.set_collapsed(collapsed["params"])
+            if "strategy" in collapsed:
+                self.strategy_panel.set_collapsed(collapsed["strategy"])
+            if "ensemble" in collapsed:
+                self.ensemble_panel_wrapper.set_collapsed(collapsed["ensemble"])
+            if "actions" in collapsed:
+                self.actions_panel.set_collapsed(collapsed["actions"])
+            if "results" in collapsed:
+                self.results_panel_wrapper.set_collapsed(collapsed["results"])
