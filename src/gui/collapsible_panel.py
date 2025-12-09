@@ -6,9 +6,19 @@ from PyQt5 import QtCore, QtWidgets
 
 
 class CollapsiblePanel(QtWidgets.QWidget):
-    """A panel with a header that can be collapsed/expanded."""
+    """A panel with a header that can be collapsed/expanded.
+
+    Features:
+    - Scrollable content area when expanded
+    - Fixed minimum height when expanded for consistent sizing
+    - Proper size hints for splitter integration
+    """
 
     collapsed_changed = QtCore.pyqtSignal(bool)
+
+    # Height constants
+    MIN_EXPANDED_HEIGHT = 80  # Minimum height when expanded
+    COLLAPSED_HEIGHT = 28  # Height of just the header
 
     def __init__(
         self,
@@ -51,21 +61,52 @@ class CollapsiblePanel(QtWidgets.QWidget):
         self._header.setText(self._title)
         self._header.setCheckable(True)
         self._header.setChecked(not self._is_collapsed)
+        self._header.setFixedHeight(self.COLLAPSED_HEIGHT)
         self._header.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
         )
         self._header.clicked.connect(self._on_header_clicked)
         self._main_layout.addWidget(self._header)
 
-        # Content area (will hold the actual content widget)
-        self._content_area = QtWidgets.QWidget()
-        self._content_layout = QtWidgets.QVBoxLayout(self._content_area)
+        # Scroll area for content
+        self._scroll_area = QtWidgets.QScrollArea()
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self._scroll_area.setStyleSheet("""
+            QScrollArea {
+                background-color: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background-color: #1e1e1e;
+                width: 10px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #4a4a4a;
+                border-radius: 5px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #5a5a5a;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+        self._main_layout.addWidget(self._scroll_area, 1)
+
+        # Content container inside scroll area
+        self._content_container = QtWidgets.QWidget()
+        self._content_layout = QtWidgets.QVBoxLayout(self._content_container)
         self._content_layout.setContentsMargins(0, 4, 0, 0)
         self._content_layout.setSpacing(0)
-        self._main_layout.addWidget(self._content_area)
+        self._scroll_area.setWidget(self._content_container)
 
-        if self._is_collapsed:
-            self._content_area.setMaximumHeight(0)
+        # Apply initial collapsed state
+        self._apply_collapsed_state()
 
     def set_content(self, widget: QtWidgets.QWidget) -> None:
         """Set the content widget for this panel."""
@@ -76,11 +117,7 @@ class CollapsiblePanel(QtWidgets.QWidget):
 
         self._content_widget = widget
         self._content_layout.addWidget(widget)
-
-        if self._is_collapsed:
-            self._content_area.setMaximumHeight(0)
-        else:
-            self._content_area.setMaximumHeight(16777215)  # Qt's QWIDGETSIZE_MAX
+        self._apply_collapsed_state()
 
     def _on_header_clicked(self, checked: bool) -> None:
         """Handle header click to toggle collapse state."""
@@ -88,13 +125,18 @@ class CollapsiblePanel(QtWidgets.QWidget):
         self._header.setArrowType(
             QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow
         )
-
-        if self._is_collapsed:
-            self._content_area.setMaximumHeight(0)
-        else:
-            self._content_area.setMaximumHeight(16777215)
-
+        self._apply_collapsed_state()
         self.collapsed_changed.emit(self._is_collapsed)
+
+    def _apply_collapsed_state(self) -> None:
+        """Apply the current collapsed state to the widget."""
+        if self._is_collapsed:
+            self._scroll_area.hide()
+            self.setFixedHeight(self.COLLAPSED_HEIGHT)
+        else:
+            self._scroll_area.show()
+            self.setMinimumHeight(self.MIN_EXPANDED_HEIGHT)
+            self.setMaximumHeight(16777215)  # Qt's QWIDGETSIZE_MAX
 
     def is_collapsed(self) -> bool:
         """Return whether the panel is currently collapsed."""
@@ -113,3 +155,15 @@ class CollapsiblePanel(QtWidgets.QWidget):
         """Set the panel title."""
         self._title = title
         self._header.setText(title)
+
+    def sizeHint(self) -> QtCore.QSize:
+        """Return the recommended size for this widget."""
+        if self._is_collapsed:
+            return QtCore.QSize(200, self.COLLAPSED_HEIGHT)
+        return QtCore.QSize(200, 150)
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        """Return the minimum recommended size."""
+        if self._is_collapsed:
+            return QtCore.QSize(100, self.COLLAPSED_HEIGHT)
+        return QtCore.QSize(100, self.MIN_EXPANDED_HEIGHT)

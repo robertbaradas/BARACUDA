@@ -17,6 +17,7 @@ from src.gui.ensemble_panel import EnsemblePanel
 from src.gui.strategy_config_widget import StrategyConfigWidget
 from src.gui.strategy_selector import StrategySelectorBar
 from src.gui.collapsible_panel import CollapsiblePanel
+from src.gui.smart_splitter import SmartSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -74,17 +75,8 @@ class BacktestWindow(QtWidgets.QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        # Vertical splitter for control panel sections
-        self.control_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        self.control_splitter.setHandleWidth(4)
-        self.control_splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: #3d3d3d;
-            }
-            QSplitter::handle:hover {
-                background-color: #1976d2;
-            }
-        """)
+        # Smart splitter for control panel sections (respects collapsed panels)
+        self.control_splitter = SmartSplitter(QtCore.Qt.Vertical)
 
         # --- Study Parameters Section ---
         self.params_panel = CollapsiblePanel("Study Parameters")
@@ -125,7 +117,7 @@ class BacktestWindow(QtWidgets.QWidget):
         params_layout.addRow("Slippage:", self.spin_slippage)
 
         self.params_panel.set_content(params_content)
-        self.control_splitter.addWidget(self.params_panel)
+        self.control_splitter.addCollapsiblePanel(self.params_panel)
 
         # --- Strategy Config Section ---
         self.strategy_panel = CollapsiblePanel("Strategy Parameters")
@@ -133,7 +125,7 @@ class BacktestWindow(QtWidgets.QWidget):
         self._strategy_config_layout = QtWidgets.QVBoxLayout(self._strategy_config_container)
         self._strategy_config_layout.setContentsMargins(8, 8, 8, 8)
         self.strategy_panel.set_content(self._strategy_config_container)
-        self.control_splitter.addWidget(self.strategy_panel)
+        self.control_splitter.addCollapsiblePanel(self.strategy_panel)
 
         # --- Ensemble Section ---
         self.ensemble_panel_wrapper = CollapsiblePanel(
@@ -142,7 +134,7 @@ class BacktestWindow(QtWidgets.QWidget):
         self.ensemble_panel = EnsemblePanel()
         self.ensemble_panel.ensembleChanged.connect(self._on_ensemble_changed)
         self.ensemble_panel_wrapper.set_content(self.ensemble_panel)
-        self.control_splitter.addWidget(self.ensemble_panel_wrapper)
+        self.control_splitter.addCollapsiblePanel(self.ensemble_panel_wrapper)
 
         # --- Actions Section (Run + Export) ---
         self.actions_panel = CollapsiblePanel("Actions")
@@ -194,13 +186,20 @@ class BacktestWindow(QtWidgets.QWidget):
         actions_layout.addWidget(self.lbl_status)
 
         self.actions_panel.set_content(actions_content)
-        self.control_splitter.addWidget(self.actions_panel)
+        self.control_splitter.addCollapsiblePanel(self.actions_panel)
 
         # --- Results Section ---
         self.results_panel_wrapper = CollapsiblePanel("Results")
         self.results_panel = BacktestResultsPanel()
         self.results_panel_wrapper.set_content(self.results_panel)
-        self.control_splitter.addWidget(self.results_panel_wrapper)
+        self.control_splitter.addCollapsiblePanel(self.results_panel_wrapper)
+
+        # Spacer panel to absorb extra space at the bottom
+        spacer = QtWidgets.QWidget()
+        spacer.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
+        self.control_splitter.addWidget(spacer)
 
         # Add control splitter to right panel
         right_layout.addWidget(self.control_splitter)
@@ -211,8 +210,8 @@ class BacktestWindow(QtWidgets.QWidget):
         # Set initial splitter proportions (charts get ~65%, controls get ~35%)
         self.main_splitter.setSizes([700, 400])
 
-        # Set initial control panel proportions
-        self.control_splitter.setSizes([100, 120, 80, 80, 300])
+        # Set initial control panel proportions (5 panels + spacer)
+        self.control_splitter.setSizes([100, 120, 80, 80, 200, 100])
 
         main_layout.addWidget(self.main_splitter)
 
