@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Callable, List, Optional
 
 from PyQt5 import QtWidgets
 
+from src.gui.news_widget import NewsWidget
 from src.gui_tape import TapeWidget
 from src.utils.formatting import (
     _fmt_price,
@@ -100,6 +101,11 @@ class InfoTab(QtWidgets.QWidget):
         self.layout.addWidget(desc_group)
         self.tapeWidget = TapeWidget()
         self.layout.addWidget(self.tapeWidget)
+
+        # News Widget
+        self.news_widget = NewsWidget()
+        self.layout.addWidget(self.news_widget)
+
         self.layout.addStretch(1)
 
     # ----- Update helpers -----
@@ -144,3 +150,15 @@ class InfoTab(QtWidgets.QWidget):
     def set_company(self, name: Optional[str], description: Optional[str]) -> None:
         self.lbl_company_name.setText(name or "—")
         self.txt_description.setPlainText(description or "—")
+
+    def set_news_callbacks(
+        self,
+        fetch_news: Callable[[str, int], List[dict]],
+        fetch_change: Callable[[str], Optional[float]],
+    ) -> None:
+        """Set callback functions for fetching news and ticker changes."""
+        self.news_widget.set_callbacks(fetch_news, fetch_change)
+
+    def load_news(self, ticker: str) -> None:
+        """Load news for the specified ticker."""
+        self.news_widget.load_news(ticker)

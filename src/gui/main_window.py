@@ -91,6 +91,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._wire_signals()
         if hasattr(self.tab_info, "tapeWidget"):
             self.tab_info.tapeWidget.setFetchTradesCallback(self.market_data.fetch_trades_today)
+        self._setup_news_callbacks()
         self._setup_trade_components()
 
     def _build_ui(self) -> None:
@@ -157,6 +158,22 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
         self.tab_chart.requestTimeframe.connect(self._on_timeframe_selected)
+
+    def _setup_news_callbacks(self) -> None:
+        """Set up news widget callbacks and signals."""
+        self.tab_info.set_news_callbacks(
+            fetch_news=self.client.fetch_ticker_news,
+            fetch_change=self.client.fetch_ticker_change,
+        )
+        self.tab_info.news_widget.ticker_requested.connect(self._on_news_ticker_requested)
+
+    @QtCore.pyqtSlot(str)
+    def _on_news_ticker_requested(self, ticker: str) -> None:
+        """Handle request to load a different ticker from news widget."""
+        if not ticker:
+            return
+        self.txt_ticker.setText(ticker)
+        self._on_load_clicked()
 
     def _setup_trade_components(self) -> None:
         try:
@@ -433,6 +450,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(str, ticker),
             )
+            # Load news for the ticker
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "_load_news_for_ticker",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, ticker),
+            )
             # Notify chart of current ticker (for cache key semantics if needed)
             self.chart_set_ticker.emit(ticker)
 
@@ -577,6 +601,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tab_info.tapeWidget.loadTicker(ticker)
         except Exception as exc:
             logger.debug("Tape widget load failed: %s", exc)
+
+    @QtCore.pyqtSlot(str)
+    def _load_news_for_ticker(self, ticker: str) -> None:
+        """Load news articles for the given ticker."""
+        if not ticker:
+            return
+        try:
+            self.tab_info.load_news(ticker)
+        except Exception as exc:
+            logger.debug("News widget load failed: %s", exc)
 
     # ----------------- WebSocket lifecycle -----------------
     def _start_ws(self) -> None:

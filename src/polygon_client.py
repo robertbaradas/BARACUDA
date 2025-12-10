@@ -202,6 +202,58 @@ class PolygonClient:
             logger.error("Failed to fetch quotes for %s: %s", ticker, exc)
             return []
 
+    def fetch_ticker_news(self, ticker: str, limit: int = 5) -> List[dict]:
+        """Fetch recent news articles for a ticker from Polygon.io.
+
+        API Endpoint: GET https://api.polygon.io/v2/reference/news
+
+        Args:
+            ticker: Stock symbol (e.g., "AAPL")
+            limit: Number of articles to return (default 5)
+
+        Returns:
+            List of dicts with keys: id, title, author, published_utc,
+            article_url, description, tickers, publisher, image_url
+        """
+        try:
+            url = f"{self.REST_BASE}/v2/reference/news"
+            params = {
+                "ticker": ticker.upper(),
+                "limit": limit,
+                "sort": "published_utc",
+                "order": "desc",
+                "apiKey": self.api_key,
+            }
+            r = self._client.get(url, params=params)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("results", [])
+        except Exception as exc:
+            logger.error("Failed to fetch news for %s: %s", ticker, exc)
+            return []
+
+    def fetch_ticker_change(self, ticker: str) -> Optional[float]:
+        """Fetch the daily percent change for a ticker.
+
+        Returns:
+            The percentage change (e.g., 2.08 for +2.08%) or None if unavailable.
+        """
+        try:
+            snap = self.get_snapshot(ticker)
+            ticker_json = (snap or {}).get("ticker") or {}
+            today_change = ticker_json.get("todaysChangePerc")
+            if today_change is not None:
+                return float(today_change)
+            # Fallback: calculate from prev close and last trade
+            prev_close = ticker_json.get("prevDay", {}).get("c")
+            last_trade = ticker_json.get("lastTrade", {}).get("p")
+            if prev_close and last_trade and prev_close > 0:
+                return ((last_trade - prev_close) / prev_close) * 100.0
+            return None
+        except Exception as exc:
+            logger.debug("Failed to fetch change for %s: %s", ticker, exc)
+            return None
+
     # ---------------------- WEBSOCKET STREAM ----------------------
     async def stream_ticker(
         self,
