@@ -80,10 +80,28 @@ class BacktestResult:
     strategy_name: str = ""
     parameters: dict = field(default_factory=dict)
 
+    # Data availability
+    days_requested: int = 0
+    days_available: int = 0
+
     @property
     def has_open_position(self) -> bool:
         """Whether there is an unclosed position at backtest end."""
         return self.open_position is not None
+
+    @property
+    def data_limited(self) -> bool:
+        """Check if we got significantly less data than requested."""
+        if self.days_requested == 0:
+            return False
+        return self.days_available < self.days_requested * 0.9
+
+    @property
+    def data_coverage_pct(self) -> float:
+        """Return percentage of requested data that was available."""
+        if self.days_requested == 0:
+            return 100.0
+        return (self.days_available / self.days_requested) * 100
 
 
 class BacktestEngine:

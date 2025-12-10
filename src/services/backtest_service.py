@@ -70,8 +70,17 @@ class BacktestService:
         df = strategy.run(df)
 
         # Trim to requested day count (after indicator warmup)
+        actual_days = len(df)
         if len(df) > days:
             df = df.iloc[-days:]
+            actual_days = len(df)
+
+        # Check for limited data availability
+        if actual_days < days * 0.9:
+            logger.warning(
+                f"Requested {days} days but only {actual_days} days available for {ticker}. "
+                f"Stock may have IPO'd recently or data may be limited."
+            )
 
         # Run backtest engine
         engine = BacktestEngine(
@@ -86,6 +95,10 @@ class BacktestService:
             strategy_name=strategy_name,
             parameters=strategy_params,
         )
+
+        # Add data availability info
+        result.days_requested = days
+        result.days_available = actual_days
 
         return result
 
@@ -147,8 +160,17 @@ class BacktestService:
         df = ensemble.run(df)
 
         # Trim to requested day count
+        actual_days = len(df)
         if len(df) > days:
             df = df.iloc[-days:]
+            actual_days = len(df)
+
+        # Check for limited data availability
+        if actual_days < days * 0.9:
+            logger.warning(
+                f"Requested {days} days but only {actual_days} days available for {ticker}. "
+                f"Stock may have IPO'd recently or data may be limited."
+            )
 
         # Run backtest engine
         engine = BacktestEngine(
@@ -173,6 +195,10 @@ class BacktestService:
             strategy_name=ensemble.name,
             parameters=params_summary,
         )
+
+        # Add data availability info
+        result.days_requested = days
+        result.days_available = actual_days
 
         return result
 

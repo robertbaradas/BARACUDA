@@ -89,14 +89,15 @@ class BacktestWindow(QtWidgets.QWidget):
         self.txt_ticker.setText("SPY")
 
         self.spin_days = QtWidgets.QSpinBox()
-        self.spin_days.setRange(30, 2000)
+        self.spin_days.setRange(1, 10000)
         self.spin_days.setValue(365)
 
         self.spin_capital = QtWidgets.QDoubleSpinBox()
-        self.spin_capital.setRange(1000, 10000000)
+        self.spin_capital.setRange(1, 100000000)
         self.spin_capital.setValue(10000)
         self.spin_capital.setPrefix("$")
         self.spin_capital.setGroupSeparatorShown(True)
+        self.spin_capital.setDecimals(2)
 
         self.spin_commission = QtWidgets.QDoubleSpinBox()
         self.spin_commission.setRange(0, 100)

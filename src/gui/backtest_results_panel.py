@@ -44,6 +44,31 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         self.open_position_warning.setVisible(False)
         layout.addWidget(self.open_position_warning)
 
+        # Limited data warning (initially hidden)
+        self.data_warning = QtWidgets.QFrame()
+        self.data_warning.setStyleSheet("""
+            QFrame {
+                background-color: #3d2000;
+                border: 1px solid #ff9800;
+                border-radius: 4px;
+                padding: 8px;
+            }
+        """)
+        data_warning_layout = QtWidgets.QVBoxLayout(self.data_warning)
+        data_warning_layout.setContentsMargins(8, 8, 8, 8)
+
+        data_warning_title = QtWidgets.QLabel("Limited Historical Data")
+        data_warning_title.setStyleSheet("color: #ff9800; font-weight: bold;")
+        data_warning_layout.addWidget(data_warning_title)
+
+        self.lbl_data_warning_details = QtWidgets.QLabel("")
+        self.lbl_data_warning_details.setStyleSheet("color: #ffcc80;")
+        self.lbl_data_warning_details.setWordWrap(True)
+        data_warning_layout.addWidget(self.lbl_data_warning_details)
+
+        self.data_warning.setVisible(False)
+        layout.addWidget(self.data_warning)
+
         # Metrics group
         metrics_group = QtWidgets.QGroupBox("Performance Metrics")
         metrics_layout = QtWidgets.QFormLayout()
@@ -95,6 +120,8 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         """Clear all displayed results."""
         self.open_position_warning.setVisible(False)
         self.lbl_open_position_details.setText("")
+        self.data_warning.setVisible(False)
+        self.lbl_data_warning_details.setText("")
         self.lbl_strategy_return.setText("—")
         self.lbl_benchmark_return.setText("—")
         self.lbl_excess_return.setText("—")
@@ -109,6 +136,18 @@ class BacktestResultsPanel(QtWidgets.QWidget):
 
     def update_results(self, result: BacktestResult) -> None:
         """Update panel with backtest results."""
+        # Handle limited data warning
+        if result.data_limited:
+            coverage = result.data_coverage_pct
+            details = (
+                f"Requested {result.days_requested} days, only {result.days_available} available ({coverage:.1f}%).\n"
+                f"Stock may have IPO'd recently. Results may not be representative."
+            )
+            self.lbl_data_warning_details.setText(details)
+            self.data_warning.setVisible(True)
+        else:
+            self.data_warning.setVisible(False)
+
         # Handle open position warning
         if result.has_open_position:
             pos = result.open_position
