@@ -9,6 +9,7 @@ from config import API_KEY, LOG_LEVEL
 from src.polygon_client import PolygonClient
 from src.gui import MainWindow
 from src.services.market_data_service import MarketDataService
+from src.theme import ThemeManager
 
 
 def main() -> int:
@@ -25,6 +26,7 @@ def main() -> int:
     market_data = MarketDataService(client)
 
     app = QtWidgets.QApplication(sys.argv)
+    ThemeManager.apply_theme(app)
     win = MainWindow(client, market_data)
     win.resize(1100, 800)
     win.show()

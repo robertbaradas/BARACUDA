@@ -8,6 +8,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from src.backtesting.engine import BacktestResult
 from src.strategies.base_strategy import ChartConfig
+from src.theme import Colors
 
 
 class BacktestChartWidget(QtWidgets.QWidget):
@@ -20,8 +21,8 @@ class BacktestChartWidget(QtWidgets.QWidget):
     def _setup_ui(self) -> None:
         """Initialize the chart layout."""
         pg.setConfigOptions(antialias=True)
-        pg.setConfigOption("background", "#1e1e1e")
-        pg.setConfigOption("foreground", "#d4d4d4")
+        pg.setConfigOption("background", Colors.BG_BASE)
+        pg.setConfigOption("foreground", Colors.TEXT_SECONDARY)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -96,7 +97,7 @@ class BacktestChartWidget(QtWidgets.QWidget):
         # Price chart
         self.price_plot.plot(
             x, price_data[-n:],
-            pen=pg.mkPen("#4fc3f7", width=1.5),
+            pen=pg.mkPen(Colors.ACCENT_CYAN, width=1.5),
             name="Close",
         )
 
@@ -107,21 +108,21 @@ class BacktestChartWidget(QtWidgets.QWidget):
         # Equity vs Benchmark
         self.equity_plot.plot(
             x, result.equity_curve.values,
-            pen=pg.mkPen("#66bb6a", width=2),
+            pen=pg.mkPen(Colors.POSITIVE, width=2),
             name="Strategy",
         )
         self.equity_plot.plot(
             x, result.benchmark_curve.values,
-            pen=pg.mkPen("#ffa726", width=2),
+            pen=pg.mkPen(Colors.WARNING, width=2),
             name="Benchmark",
         )
 
         # Drawdown
         self.drawdown_plot.plot(
             x, result.drawdown_curve.values,
-            pen=pg.mkPen("#ef5350", width=1.5),
+            pen=pg.mkPen(Colors.NEGATIVE, width=1.5),
             fillLevel=0,
-            brush=pg.mkBrush("#ef535050"),
+            brush=pg.mkBrush(Colors.NEGATIVE + "50"),
         )
 
         # Indicator subplot (only for strategies that use subplots)
@@ -188,8 +189,8 @@ class BacktestChartWidget(QtWidgets.QWidget):
             col = bar.get("column")
             if col and col in df.columns:
                 data = df[col].values[-n:]
-                color_pos = bar.get("color_pos", "#66bb6a")
-                color_neg = bar.get("color_neg", "#ef5350")
+                color_pos = bar.get("color_pos", Colors.POSITIVE)
+                color_neg = bar.get("color_neg", Colors.NEGATIVE)
 
                 # Separate positive and negative values
                 pos_mask = data >= 0
@@ -232,7 +233,7 @@ class BacktestChartWidget(QtWidgets.QWidget):
             line = pg.InfiniteLine(
                 pos=hl["y"],
                 angle=0,
-                pen=pg.mkPen(hl.get("color", "#888888"), style=style),
+                pen=pg.mkPen(hl.get("color", Colors.TEXT_SECONDARY), style=style),
             )
             self.indicator_plot.addItem(line)
 
@@ -252,7 +253,7 @@ class BacktestChartWidget(QtWidgets.QWidget):
         valid_indicator = indicator_data[-n:]
         self.indicator_plot.plot(
             x, valid_indicator,
-            pen=pg.mkPen("#ffd54f", width=1.5),
+            pen=pg.mkPen(Colors.CHART_ORANGE, width=1.5),
         )
 
         if indicator_range:
@@ -263,7 +264,7 @@ class BacktestChartWidget(QtWidgets.QWidget):
                 line = pg.InfiniteLine(
                     pos=hl["y"],
                     angle=0,
-                    pen=pg.mkPen(hl.get("color", "#888888"), style=QtCore.Qt.DashLine),
+                    pen=pg.mkPen(hl.get("color", Colors.TEXT_SECONDARY), style=QtCore.Qt.DashLine),
                 )
                 self.indicator_plot.addItem(line)
 
@@ -294,7 +295,7 @@ class BacktestChartWidget(QtWidgets.QWidget):
                 pen=None,
                 symbol="t",
                 symbolSize=12,
-                symbolBrush="#66bb6a",
+                symbolBrush=Colors.POSITIVE,
                 symbolPen=None,
             )
 
@@ -304,6 +305,6 @@ class BacktestChartWidget(QtWidgets.QWidget):
                 pen=None,
                 symbol="t1",
                 symbolSize=12,
-                symbolBrush="#ef5350",
+                symbolBrush=Colors.NEGATIVE,
                 symbolPen=None,
             )
