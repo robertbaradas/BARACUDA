@@ -107,6 +107,27 @@ class ExportService:
             "",
         ])
 
+        # Termination warning section (bankruptcy or margin call)
+        if result.terminated_early:
+            term_type = result.termination_reason.value.upper().replace("_", " ")
+            term_date = result.termination_date.strftime('%Y-%m-%d') if result.termination_date else 'Unknown'
+            term_equity = result.termination_equity if result.termination_equity is not None else 0
+            lines.extend([
+                "-" * 60,
+                f"!!! BACKTEST TERMINATED EARLY: {term_type} !!!",
+                "-" * 60,
+                f"Termination Date: {term_date}",
+                f"Final Equity:     ${term_equity:,.2f}",
+                f"Margin Req.:      {result.margin_requirement:.0%}",
+                f"Margin Threshold: {result.margin_call_threshold:.0%}",
+                "",
+                f"Details: {result.termination_details}",
+                "",
+                "NOTE: Trading ceased after termination. Equity curve flatlines",
+                "      from termination date forward.",
+                "",
+            ])
+
         # Open position warning section
         if result.has_open_position:
             pos = result.open_position
@@ -132,16 +153,18 @@ class ExportService:
                 "-" * 60,
                 "TRADE HISTORY",
                 "-" * 60,
-                f"{'Date':<12} {'Action':<8} {'Shares':>10} {'Price':>10} {'Equity':>12}",
+                f"{'Date':<12} {'Action':<12} {'Shares':>10} {'Price':>10} {'Equity':>12}",
                 "-" * 60,
             ])
             for trade in result.trades:
+                # Mark forced trades with indicator
+                forced_marker = " [FORCED]" if trade.is_forced else ""
                 lines.append(
                     f"{trade.date.strftime('%Y-%m-%d'):<12} "
-                    f"{trade.action:<8} "
+                    f"{trade.action:<12} "
                     f"{trade.shares:>10.2f} "
                     f"${trade.price:>9.2f} "
-                    f"${trade.equity_after:>11,.2f}"
+                    f"${trade.equity_after:>11,.2f}{forced_marker}"
                 )
 
         lines.extend([

@@ -34,6 +34,9 @@ class BacktestService:
         slippage: float = 0.0,
         strategy_params: Optional[dict] = None,
         end_date: Optional[datetime] = None,
+        margin_requirement: float = 0.5,
+        margin_call_threshold: float = 0.25,
+        enable_margin_protection: bool = True,
     ) -> BacktestResult:
         """Run a backtest for the given ticker and strategy.
 
@@ -46,6 +49,9 @@ class BacktestService:
             slippage: Slippage as fraction of price
             strategy_params: Parameter overrides for strategy
             end_date: End date for backtest (defaults to today)
+            margin_requirement: Minimum margin required for short positions (0.5 = 50%)
+            margin_call_threshold: Equity threshold as fraction of starting capital (0.25 = 25%)
+            enable_margin_protection: Whether to enforce margin calls and bankruptcy protection
 
         Returns:
             BacktestResult with equity curve, metrics, and trades
@@ -87,6 +93,9 @@ class BacktestService:
             starting_capital=starting_capital,
             commission=commission,
             slippage=slippage,
+            margin_requirement=margin_requirement,
+            margin_call_threshold=margin_call_threshold,
+            enable_margin_protection=enable_margin_protection,
         )
 
         result = engine.run(
@@ -113,6 +122,9 @@ class BacktestService:
         commission: float = 0.0,
         slippage: float = 0.0,
         end_date: Optional[datetime] = None,
+        margin_requirement: float = 0.5,
+        margin_call_threshold: float = 0.25,
+        enable_margin_protection: bool = True,
     ) -> BacktestResult:
         """Run an ensemble backtest combining multiple strategies.
 
@@ -126,6 +138,9 @@ class BacktestService:
             commission: Commission per trade
             slippage: Slippage fraction
             end_date: End date for backtest
+            margin_requirement: Minimum margin required for short positions (0.5 = 50%)
+            margin_call_threshold: Equity threshold as fraction of starting capital (0.25 = 25%)
+            enable_margin_protection: Whether to enforce margin calls and bankruptcy protection
 
         Returns:
             BacktestResult
@@ -177,6 +192,9 @@ class BacktestService:
             starting_capital=starting_capital,
             commission=commission,
             slippage=slippage,
+            margin_requirement=margin_requirement,
+            margin_call_threshold=margin_call_threshold,
+            enable_margin_protection=enable_margin_protection,
         )
 
         # Build parameter summary

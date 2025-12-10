@@ -4,7 +4,7 @@ from typing import Optional
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from src.backtesting.engine import BacktestResult
+from src.backtesting.engine import BacktestResult, TerminationReason
 
 
 class BacktestResultsPanel(QtWidgets.QWidget):
@@ -69,6 +69,24 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         self.data_warning.setVisible(False)
         layout.addWidget(self.data_warning)
 
+        # Termination warning (initially hidden)
+        self.termination_warning = QtWidgets.QFrame()
+        self.termination_warning.setObjectName("termination_warning")
+        termination_warning_layout = QtWidgets.QVBoxLayout(self.termination_warning)
+        termination_warning_layout.setContentsMargins(8, 8, 8, 8)
+
+        self.lbl_termination_title = QtWidgets.QLabel("")
+        self.lbl_termination_title.setStyleSheet("font-weight: bold;")
+        termination_warning_layout.addWidget(self.lbl_termination_title)
+
+        self.lbl_termination_details = QtWidgets.QLabel("")
+        self.lbl_termination_details.setWordWrap(True)
+        self.lbl_termination_details.setTextFormat(QtCore.Qt.RichText)
+        termination_warning_layout.addWidget(self.lbl_termination_details)
+
+        self.termination_warning.setVisible(False)
+        layout.addWidget(self.termination_warning)
+
         # Metrics group
         metrics_group = QtWidgets.QGroupBox("Performance Metrics")
         metrics_layout = QtWidgets.QFormLayout()
@@ -122,6 +140,9 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         self.lbl_open_position_details.setText("")
         self.data_warning.setVisible(False)
         self.lbl_data_warning_details.setText("")
+        self.termination_warning.setVisible(False)
+        self.lbl_termination_title.setText("")
+        self.lbl_termination_details.setText("")
         self.lbl_strategy_return.setText("—")
         self.lbl_benchmark_return.setText("—")
         self.lbl_excess_return.setText("—")
@@ -147,6 +168,49 @@ class BacktestResultsPanel(QtWidgets.QWidget):
             self.data_warning.setVisible(True)
         else:
             self.data_warning.setVisible(False)
+
+        # Handle termination warning (bankruptcy or margin call)
+        if result.terminated_early:
+            if result.termination_reason == TerminationReason.BANKRUPTCY:
+                # Red styling for bankruptcy
+                self.termination_warning.setStyleSheet("""
+                    QFrame {
+                        background-color: #4a0000;
+                        border: 2px solid #ef5350;
+                        border-radius: 4px;
+                        padding: 8px;
+                    }
+                """)
+                self.lbl_termination_title.setText("⚠ BANKRUPTCY - Trading Terminated")
+                self.lbl_termination_title.setStyleSheet("color: #ef5350; font-weight: bold;")
+                self.lbl_termination_details.setStyleSheet("color: #ffcdd2;")
+            else:  # MARGIN_CALL
+                # Orange styling for margin call
+                self.termination_warning.setStyleSheet("""
+                    QFrame {
+                        background-color: #4a3000;
+                        border: 2px solid #ff9800;
+                        border-radius: 4px;
+                        padding: 8px;
+                    }
+                """)
+                self.lbl_termination_title.setText("⚠ MARGIN CALL - Positions Liquidated")
+                self.lbl_termination_title.setStyleSheet("color: #ff9800; font-weight: bold;")
+                self.lbl_termination_details.setStyleSheet("color: #ffe0b2;")
+
+            # Format termination date
+            term_date = result.termination_date.strftime("%Y-%m-%d") if result.termination_date else "Unknown"
+            term_equity = result.termination_equity if result.termination_equity is not None else 0
+
+            details = (
+                f"<b>Date:</b> {term_date}<br>"
+                f"<b>Final Equity:</b> ${term_equity:,.2f}<br>"
+                f"<b>Details:</b> {result.termination_details}"
+            )
+            self.lbl_termination_details.setText(details)
+            self.termination_warning.setVisible(True)
+        else:
+            self.termination_warning.setVisible(False)
 
         # Handle open position warning
         if result.has_open_position:
@@ -234,7 +298,10 @@ class BacktestResultsPanel(QtWidgets.QWidget):
             ))
 
             action_item = QtWidgets.QTableWidgetItem(trade.action)
-            if trade.action in ("BUY", "COVER"):
+            if trade.action in ("FORCED_SELL", "FORCED_COVER"):
+                # Forced liquidation - orange color
+                action_item.setForeground(QtGui.QColor("#ff9800"))
+            elif trade.action in ("BUY", "COVER"):
                 action_item.setForeground(QtGui.QColor("#66bb6a"))
             else:
                 action_item.setForeground(QtGui.QColor("#ef5350"))
