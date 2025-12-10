@@ -77,7 +77,7 @@ class ChartTab(QtWidgets.QWidget):
         self._pan_start_pos: Optional[QtCore.QPoint] = None
         self._pan_start_range: Optional[List[List[float]]] = None
         self._pan_start_view: Optional[QtCore.QPointF] = None
-        self._pan_sensitivity: float = 0.2  # lower = less responsive pan
+        self._pan_sensitivity: float = 0.08  # lower = less responsive pan
         self._data_time_min: Optional[float] = None
         self._data_time_max: Optional[float] = None
         self._data_time_span: Optional[float] = None
@@ -622,7 +622,7 @@ class ChartTab(QtWidgets.QWidget):
         if delta == 0:
             event.ignore()
             return
-        zoom_factor = 1.05 if delta > 0 else 0.95
+        zoom_factor = 1.02 if delta > 0 else 0.98
         x_min, x_max = self._viewbox.viewRange()[0]
         current_span = max(1e-6, x_max - x_min)
         new_span = current_span / zoom_factor

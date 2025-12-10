@@ -41,10 +41,7 @@ class BacktestWindow(QtWidgets.QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Initialize the backtest window layout."""
-        self.setWindowTitle("Strategy Backtester")
-        self.setMinimumSize(1200, 800)
-
+        """Initialize the backtest tab layout."""
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
 
