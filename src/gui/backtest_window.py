@@ -319,11 +319,7 @@ class BacktestWindow(QtWidgets.QWidget):
         self.results_panel.update_results(result)
         self._enable_export_buttons(True)
 
-        self._set_status(
-            f"Backtest complete: {result.total_return:+.2f}% return, "
-            f"{result.num_trades} trades",
-            error=False,
-        )
+        self._set_result_status(result)
 
     def _run_ensemble_backtest(self, ticker: str) -> None:
         """Run backtest for ensemble of strategies."""
@@ -370,11 +366,7 @@ class BacktestWindow(QtWidgets.QWidget):
         self.results_panel.update_results(result)
         self._enable_export_buttons(True)
 
-        self._set_status(
-            f"Ensemble backtest complete: {result.total_return:+.2f}% return, "
-            f"{result.num_trades} trades",
-            error=False,
-        )
+        self._set_result_status(result, ensemble=True)
 
     def _fetch_data_for_plotting(self, ticker: str, days: int):
         """Fetch data for chart plotting."""
@@ -412,6 +404,29 @@ class BacktestWindow(QtWidgets.QWidget):
     def _set_status(self, message: str, error: bool = False) -> None:
         """Update status label."""
         color = "#ef5350" if error else "#66bb6a"
+        self.lbl_status.setStyleSheet(f"color: {color};")
+        self.lbl_status.setText(message)
+
+    def _set_result_status(self, result, ensemble: bool = False) -> None:
+        """Update status label with backtest result, colored by performance."""
+        prefix = "Ensemble backtest" if ensemble else "Backtest"
+        message = (
+            f"{prefix} complete: {result.total_return:+.2f}% return, "
+            f"{result.num_trades} trades"
+        )
+
+        # Color based on return value
+        if result.total_return > 0:
+            color = "#66bb6a"  # Green for positive
+        elif result.total_return < 0:
+            color = "#ef5350"  # Red for negative
+        else:
+            color = "#ffa726"  # Orange for zero
+
+        # Add warning if there's an open position with unrealized loss
+        if result.has_open_position and result.open_position.unrealized_pnl < 0:
+            message += " (open position losing)"
+
         self.lbl_status.setStyleSheet(f"color: {color};")
         self.lbl_status.setText(message)
 

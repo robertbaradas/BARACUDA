@@ -38,6 +38,7 @@ class BacktestResultsPanel(QtWidgets.QWidget):
         self.lbl_open_position_details = QtWidgets.QLabel("")
         self.lbl_open_position_details.setStyleSheet("color: #ffcc80;")
         self.lbl_open_position_details.setWordWrap(True)
+        self.lbl_open_position_details.setTextFormat(QtCore.Qt.RichText)  # Enable HTML rendering
         warning_layout.addWidget(self.lbl_open_position_details)
 
         self.open_position_warning.setVisible(False)
@@ -114,8 +115,8 @@ class BacktestResultsPanel(QtWidgets.QWidget):
             pnl_color = "#66bb6a" if pos.is_winning else "#ef5350"
             pnl_sign = "+" if pos.unrealized_pnl >= 0 else ""
             details = (
-                f"{pos.direction} {pos.shares:.2f} shares @ ${pos.entry_price:.2f}\n"
-                f"Current: ${pos.current_price:.2f}\n"
+                f"{pos.direction} {pos.shares:.2f} shares @ ${pos.entry_price:.2f}<br>"
+                f"Current: ${pos.current_price:.2f}<br>"
                 f"Unrealized P&L: <span style='color:{pnl_color}'>{pnl_sign}${pos.unrealized_pnl:,.2f} ({pnl_sign}{pos.unrealized_pnl_pct:.2f}%)</span>"
             )
             self.lbl_open_position_details.setText(details)
